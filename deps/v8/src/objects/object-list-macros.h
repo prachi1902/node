@@ -98,7 +98,6 @@ class ZoneForwardList;
   V(CompilationCacheTable)                     \
   V(ConsString)                                \
   V(Constructor)                               \
-  V(Context)                                   \
   V(CoverageInfo)                              \
   V(ClosureFeedbackCellArray)                  \
   V(DataHandler)                               \
@@ -196,7 +195,6 @@ class ZoneForwardList;
   V(SeqOneByteString)                          \
   V(SeqString)                                 \
   V(SeqTwoByteString)                          \
-  V(SharedFunctionInfo)                        \
   V(SimpleNumberDictionary)                    \
   V(SlicedString)                              \
   V(SmallOrderedHashMap)                       \
@@ -209,6 +207,7 @@ class ZoneForwardList;
   V(StringSet)                                 \
   V(StringWrapper)                             \
   V(Struct)                                    \
+  V(SwissNameDictionary)                       \
   V(Symbol)                                    \
   V(SymbolWrapper)                             \
   V(SyntheticModule)                           \
@@ -216,9 +215,6 @@ class ZoneForwardList;
   V(TemplateList)                              \
   V(ThinString)                                \
   V(TransitionArray)                           \
-  V(UncompiledData)                            \
-  V(UncompiledDataWithPreparseData)            \
-  V(UncompiledDataWithoutPreparseData)         \
   V(Undetectable)                              \
   V(UniqueName)                                \
   V(WasmArray)                                 \
@@ -231,6 +227,7 @@ class ZoneForwardList;
   V(WasmStruct)                                \
   V(WasmTypeInfo)                              \
   V(WasmTableObject)                           \
+  V(WasmValueObject)                           \
   V(WeakFixedArray)                            \
   V(WeakArrayList)                             \
   V(WeakCell)                                  \
@@ -270,6 +267,9 @@ class ZoneForwardList;
   V(FreeSpaceOrFiller)                       \
   V(FunctionContext)                         \
   V(JSApiObject)                             \
+  V(JSPromiseConstructor)                    \
+  V(JSArrayConstructor)                      \
+  V(JSRegExpConstructor)                     \
   V(JSMapKeyIterator)                        \
   V(JSMapKeyValueIterator)                   \
   V(JSMapValueIterator)                      \
@@ -279,7 +279,30 @@ class ZoneForwardList;
   V(ModuleContext)                           \
   V(NonNullForeign)                          \
   V(ScriptContext)                           \
-  V(WithContext)
+  V(WithContext)                             \
+  V(JSPrototype)                             \
+  V(JSObjectPrototype)                       \
+  V(JSRegExpPrototype)                       \
+  V(JSPromisePrototype)                      \
+  V(JSSetPrototype)                          \
+  V(JSIteratorPrototype)                     \
+  V(JSArrayIteratorPrototype)                \
+  V(JSMapIteratorPrototype)                  \
+  V(JSTypedArrayPrototype)                   \
+  V(JSSetIteratorPrototype)                  \
+  V(JSStringIteratorPrototype)               \
+  V(TypedArrayConstructor)                   \
+  V(Uint8TypedArrayConstructor)              \
+  V(Int8TypedArrayConstructor)               \
+  V(Uint16TypedArrayConstructor)             \
+  V(Int16TypedArrayConstructor)              \
+  V(Uint32TypedArrayConstructor)             \
+  V(Int32TypedArrayConstructor)              \
+  V(Float32TypedArrayConstructor)            \
+  V(Float64TypedArrayConstructor)            \
+  V(Uint8ClampedTypedArrayConstructor)       \
+  V(Biguint64TypedArrayConstructor)          \
+  V(Bigint64TypedArrayConstructor)
 
 #define HEAP_OBJECT_TYPE_LIST(V)    \
   HEAP_OBJECT_ORDINARY_TYPE_LIST(V) \

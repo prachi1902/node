@@ -34,7 +34,7 @@
 #include "src/objects/property-details.h"
 #include "src/objects/property.h"
 #include "src/objects/regexp-match-info.h"
-#include "src/objects/scope-info.h"
+#include "src/objects/scope-info-inl.h"
 #include "src/objects/shared-function-info.h"
 #include "src/objects/slots-inl.h"
 #include "src/objects/smi-inl.h"
@@ -154,8 +154,7 @@ DEF_GETTER(HeapObject, IsUniqueName, bool) {
 }
 
 DEF_GETTER(HeapObject, IsFunction, bool) {
-  STATIC_ASSERT(LAST_FUNCTION_TYPE == LAST_TYPE);
-  return map(isolate).instance_type() >= FIRST_FUNCTION_TYPE;
+  return IsJSFunctionOrBoundFunction();
 }
 
 DEF_GETTER(HeapObject, IsCallable, bool) { return map(isolate).is_callable(); }
@@ -451,7 +450,6 @@ bool Object::IsMinusZero() const {
 }
 
 OBJECT_CONSTRUCTORS_IMPL(RegExpMatchInfo, FixedArray)
-OBJECT_CONSTRUCTORS_IMPL(ScopeInfo, FixedArray)
 OBJECT_CONSTRUCTORS_IMPL(BigIntBase, PrimitiveHeapObject)
 OBJECT_CONSTRUCTORS_IMPL(BigInt, BigIntBase)
 OBJECT_CONSTRUCTORS_IMPL(FreshlyAllocatedBigInt, BigIntBase)
@@ -462,7 +460,6 @@ OBJECT_CONSTRUCTORS_IMPL(FreshlyAllocatedBigInt, BigIntBase)
 CAST_ACCESSOR(BigIntBase)
 CAST_ACCESSOR(BigInt)
 CAST_ACCESSOR(RegExpMatchInfo)
-CAST_ACCESSOR(ScopeInfo)
 
 bool Object::HasValidElements() {
   // Dictionary is covered under FixedArray. ByteArray is used
@@ -900,7 +897,7 @@ void RegExpMatchInfo::SetCapture(int i, int value) {
 }
 
 WriteBarrierMode HeapObject::GetWriteBarrierMode(
-    const DisallowHeapAllocation& promise) {
+    const DisallowGarbageCollection& promise) {
   return GetWriteBarrierModeForObject(*this, &promise);
 }
 
@@ -1024,7 +1021,7 @@ MaybeHandle<Object> Object::GetPropertyOrElement(Handle<Object> receiver,
 
 // static
 Object Object::GetSimpleHash(Object object) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   if (object.IsSmi()) {
     uint32_t hash = ComputeUnseededHash(Smi::ToInt(object));
     return Smi::FromInt(hash & Smi::kMaxValue);
@@ -1044,11 +1041,11 @@ Object Object::GetSimpleHash(Object object) {
     return Smi::FromInt(hash & Smi::kMaxValue);
   }
   if (object.IsName()) {
-    uint32_t hash = Name::cast(object).Hash();
+    uint32_t hash = Name::cast(object).EnsureHash();
     return Smi::FromInt(hash);
   }
   if (object.IsOddball()) {
-    uint32_t hash = Oddball::cast(object).to_string().Hash();
+    uint32_t hash = Oddball::cast(object).to_string().EnsureHash();
     return Smi::FromInt(hash);
   }
   if (object.IsBigInt()) {
@@ -1064,7 +1061,7 @@ Object Object::GetSimpleHash(Object object) {
 }
 
 Object Object::GetHash() {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   Object hash = GetSimpleHash(*this);
   if (hash.IsSmi()) return hash;
 
@@ -1119,24 +1116,6 @@ static inline Handle<Object> MakeEntryPair(Isolate* isolate, Handle<Object> key,
   return isolate->factory()->NewJSArrayWithElements(entry_storage,
                                                     PACKED_ELEMENTS, 2);
 }
-
-bool ScopeInfo::IsAsmModule() const { return IsAsmModuleBit::decode(Flags()); }
-
-bool ScopeInfo::HasSimpleParameters() const {
-  return HasSimpleParametersBit::decode(Flags());
-}
-
-#define FIELD_ACCESSORS(name)                                                 \
-  void ScopeInfo::Set##name(int value) { set(k##name, Smi::FromInt(value)); } \
-  int ScopeInfo::name() const {                                               \
-    if (length() > 0) {                                                       \
-      return Smi::ToInt(get(k##name));                                        \
-    } else {                                                                  \
-      return 0;                                                               \
-    }                                                                         \
-  }
-FOR_EACH_SCOPE_INFO_NUMERIC_FIELD(FIELD_ACCESSORS)
-#undef FIELD_ACCESSORS
 
 FreshlyAllocatedBigInt FreshlyAllocatedBigInt::cast(Object object) {
   SLOW_DCHECK(object.IsBigInt());

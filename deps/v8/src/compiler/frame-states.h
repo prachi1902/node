@@ -66,6 +66,8 @@ enum class FrameStateType {
   kArgumentsAdaptor,               // Represents an ArgumentsAdaptorFrame.
   kConstructStub,                  // Represents a ConstructStubFrame.
   kBuiltinContinuation,            // Represents a continuation to a stub.
+  kJSToWasmBuiltinContinuation,    // Represents a lazy deopt continuation for a
+                                   // JS to Wasm call.
   kJavaScriptBuiltinContinuation,  // Represents a continuation to a JavaScipt
                                    // builtin.
   kJavaScriptBuiltinContinuationWithCatch  // Represents a continuation to a
@@ -101,10 +103,27 @@ class FrameStateFunctionInfo {
   Handle<SharedFunctionInfo> const shared_info_;
 };
 
+class JSToWasmFrameStateFunctionInfo : public FrameStateFunctionInfo {
+ public:
+  JSToWasmFrameStateFunctionInfo(FrameStateType type, int parameter_count,
+                                 int local_count,
+                                 Handle<SharedFunctionInfo> shared_info,
+                                 const wasm::FunctionSig* signature)
+      : FrameStateFunctionInfo(type, parameter_count, local_count, shared_info),
+        signature_(signature) {
+    DCHECK_NOT_NULL(signature);
+  }
+
+  const wasm::FunctionSig* signature() const { return signature_; }
+
+ private:
+  const wasm::FunctionSig* const signature_;
+};
 
 class FrameStateInfo final {
  public:
-  FrameStateInfo(BailoutId bailout_id, OutputFrameStateCombine state_combine,
+  FrameStateInfo(BytecodeOffset bailout_id,
+                 OutputFrameStateCombine state_combine,
                  const FrameStateFunctionInfo* info)
       : bailout_id_(bailout_id),
         frame_state_combine_(state_combine),
@@ -114,7 +133,7 @@ class FrameStateInfo final {
     return info_ == nullptr ? FrameStateType::kInterpretedFunction
                             : info_->type();
   }
-  BailoutId bailout_id() const { return bailout_id_; }
+  BytecodeOffset bailout_id() const { return bailout_id_; }
   OutputFrameStateCombine state_combine() const { return frame_state_combine_; }
   MaybeHandle<SharedFunctionInfo> shared_info() const {
     return info_ == nullptr ? MaybeHandle<SharedFunctionInfo>()
@@ -129,7 +148,7 @@ class FrameStateInfo final {
   const FrameStateFunctionInfo* function_info() const { return info_; }
 
  private:
-  BailoutId const bailout_id_;
+  BytecodeOffset const bailout_id_;
   OutputFrameStateCombine const frame_state_combine_;
   const FrameStateFunctionInfo* const info_;
 };
@@ -141,20 +160,19 @@ size_t hash_value(FrameStateInfo const&);
 
 std::ostream& operator<<(std::ostream&, FrameStateInfo const&);
 
-static constexpr int kFrameStateParametersInput = 0;
-static constexpr int kFrameStateLocalsInput = 1;
-static constexpr int kFrameStateStackInput = 2;
-static constexpr int kFrameStateContextInput = 3;
-static constexpr int kFrameStateFunctionInput = 4;
-static constexpr int kFrameStateOuterStateInput = 5;
-static constexpr int kFrameStateInputCount = kFrameStateOuterStateInput + 1;
-
 enum class ContinuationFrameStateMode { EAGER, LAZY, LAZY_WITH_CATCH };
+
+class FrameState;
 
 FrameState CreateStubBuiltinContinuationFrameState(
     JSGraph* graph, Builtins::Name name, Node* context, Node* const* parameters,
     int parameter_count, Node* outer_frame_state,
-    ContinuationFrameStateMode mode);
+    ContinuationFrameStateMode mode,
+    const wasm::FunctionSig* signature = nullptr);
+
+FrameState CreateJSWasmCallBuiltinContinuationFrameState(
+    JSGraph* jsgraph, Node* context, Node* outer_frame_state,
+    const wasm::FunctionSig* signature);
 
 FrameState CreateJavaScriptBuiltinContinuationFrameState(
     JSGraph* graph, const SharedFunctionInfoRef& shared, Builtins::Name name,

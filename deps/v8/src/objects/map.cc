@@ -32,7 +32,7 @@ namespace v8 {
 namespace internal {
 
 Map Map::GetPrototypeChainRootMap(Isolate* isolate) const {
-  DisallowHeapAllocation no_alloc;
+  DisallowGarbageCollection no_alloc;
   if (IsJSReceiverMap()) {
     return *this;
   }
@@ -154,7 +154,6 @@ VisitorId Map::GetVisitorId(Map map) {
     case GLOBAL_DICTIONARY_TYPE:
     case NUMBER_DICTIONARY_TYPE:
     case SIMPLE_NUMBER_DICTIONARY_TYPE:
-    case SCOPE_INFO_TYPE:
     case SCRIPT_CONTEXT_TABLE_TYPE:
       return kVisitFixedArray;
 
@@ -209,9 +208,6 @@ VisitorId Map::GetVisitorId(Map map) {
     case CALL_HANDLER_INFO_TYPE:
       return kVisitStruct;
 
-    case SHARED_FUNCTION_INFO_TYPE:
-      return kVisitSharedFunctionInfo;
-
     case JS_PROXY_TYPE:
       return kVisitStruct;
 
@@ -225,6 +221,13 @@ VisitorId Map::GetVisitorId(Map map) {
       return kVisitJSDataView;
 
     case JS_FUNCTION_TYPE:
+    case JS_PROMISE_CONSTRUCTOR_TYPE:
+    case JS_REG_EXP_CONSTRUCTOR_TYPE:
+    case JS_ARRAY_CONSTRUCTOR_TYPE:
+#define TYPED_ARRAY_CONSTRUCTORS_SWITCH(Type, type, TYPE, Ctype) \
+  case TYPE##_TYPED_ARRAY_CONSTRUCTOR_TYPE:
+      TYPED_ARRAYS(TYPED_ARRAY_CONSTRUCTORS_SWITCH)
+#undef TYPED_ARRAY_CONSTRUCTORS_SWITCH
       return kVisitJSFunction;
 
     case JS_TYPED_ARRAY_TYPE:
@@ -239,6 +242,9 @@ VisitorId Map::GetVisitorId(Map map) {
     case SMALL_ORDERED_NAME_DICTIONARY_TYPE:
       return kVisitSmallOrderedNameDictionary;
 
+    case SWISS_NAME_DICTIONARY_TYPE:
+      return kVisitSwissNameDictionary;
+
     case CODE_DATA_CONTAINER_TYPE:
       return kVisitCodeDataContainer;
 
@@ -248,41 +254,45 @@ VisitorId Map::GetVisitorId(Map map) {
     case PREPARSE_DATA_TYPE:
       return kVisitPreparseData;
 
-    case UNCOMPILED_DATA_WITHOUT_PREPARSE_DATA_TYPE:
-      return kVisitUncompiledDataWithoutPreparseData;
-
-    case UNCOMPILED_DATA_WITH_PREPARSE_DATA_TYPE:
-      return kVisitUncompiledDataWithPreparseData;
-
     case COVERAGE_INFO_TYPE:
       return kVisitCoverageInfo;
 
-    case JS_OBJECT_TYPE:
-    case JS_ERROR_TYPE:
     case JS_ARGUMENTS_OBJECT_TYPE:
-    case JS_ASYNC_FROM_SYNC_ITERATOR_TYPE:
-    case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
-    case JS_GENERATOR_OBJECT_TYPE:
-    case JS_ASYNC_FUNCTION_OBJECT_TYPE:
-    case JS_ASYNC_GENERATOR_OBJECT_TYPE:
-    case JS_MODULE_NAMESPACE_TYPE:
-    case JS_PRIMITIVE_WRAPPER_TYPE:
-    case JS_DATE_TYPE:
+    case JS_ARRAY_ITERATOR_PROTOTYPE_TYPE:
     case JS_ARRAY_ITERATOR_TYPE:
     case JS_ARRAY_TYPE:
-    case JS_MESSAGE_OBJECT_TYPE:
-    case JS_SET_TYPE:
-    case JS_MAP_TYPE:
-    case JS_SET_KEY_VALUE_ITERATOR_TYPE:
-    case JS_SET_VALUE_ITERATOR_TYPE:
+    case JS_ASYNC_FROM_SYNC_ITERATOR_TYPE:
+    case JS_ASYNC_FUNCTION_OBJECT_TYPE:
+    case JS_ASYNC_GENERATOR_OBJECT_TYPE:
+    case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
+    case JS_DATE_TYPE:
+    case JS_ERROR_TYPE:
+    case JS_FINALIZATION_REGISTRY_TYPE:
+    case JS_GENERATOR_OBJECT_TYPE:
+    case JS_ITERATOR_PROTOTYPE_TYPE:
+    case JS_MAP_ITERATOR_PROTOTYPE_TYPE:
     case JS_MAP_KEY_ITERATOR_TYPE:
     case JS_MAP_KEY_VALUE_ITERATOR_TYPE:
+    case JS_MAP_TYPE:
     case JS_MAP_VALUE_ITERATOR_TYPE:
-    case JS_STRING_ITERATOR_TYPE:
+    case JS_MESSAGE_OBJECT_TYPE:
+    case JS_MODULE_NAMESPACE_TYPE:
+    case JS_OBJECT_PROTOTYPE_TYPE:
+    case JS_OBJECT_TYPE:
+    case JS_PRIMITIVE_WRAPPER_TYPE:
+    case JS_PROMISE_PROTOTYPE_TYPE:
     case JS_PROMISE_TYPE:
-    case JS_REG_EXP_TYPE:
+    case JS_REG_EXP_PROTOTYPE_TYPE:
     case JS_REG_EXP_STRING_ITERATOR_TYPE:
-    case JS_FINALIZATION_REGISTRY_TYPE:
+    case JS_REG_EXP_TYPE:
+    case JS_SET_ITERATOR_PROTOTYPE_TYPE:
+    case JS_SET_KEY_VALUE_ITERATOR_TYPE:
+    case JS_SET_PROTOTYPE_TYPE:
+    case JS_SET_TYPE:
+    case JS_SET_VALUE_ITERATOR_TYPE:
+    case JS_STRING_ITERATOR_PROTOTYPE_TYPE:
+    case JS_STRING_ITERATOR_TYPE:
+    case JS_TYPED_ARRAY_PROTOTYPE_TYPE:
 #ifdef V8_INTL_SUPPORT
     case JS_V8_BREAK_ITERATOR_TYPE:
     case JS_COLLATOR_TYPE:
@@ -302,6 +312,7 @@ VisitorId Map::GetVisitorId(Map map) {
     case WASM_MEMORY_OBJECT_TYPE:
     case WASM_MODULE_OBJECT_TYPE:
     case WASM_TABLE_OBJECT_TYPE:
+    case WASM_VALUE_OBJECT_TYPE:
     case JS_BOUND_FUNCTION_TYPE: {
       const bool has_raw_data_fields =
           (FLAG_unbox_double_fields && !map.HasFastPointerLayout()) ||
@@ -596,16 +607,16 @@ bool Map::HasOutOfObjectProperties() const {
 
 void Map::DeprecateTransitionTree(Isolate* isolate) {
   if (is_deprecated()) return;
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   TransitionsAccessor transitions(isolate, *this, &no_gc);
   int num_transitions = transitions.NumberOfTransitions();
   for (int i = 0; i < num_transitions; ++i) {
     transitions.GetTarget(i).DeprecateTransitionTree(isolate);
   }
-  DCHECK(!constructor_or_backpointer().IsFunctionTemplateInfo());
+  DCHECK(!constructor_or_back_pointer().IsFunctionTemplateInfo());
   DCHECK(CanBeDeprecated());
   set_is_deprecated(true);
-  if (FLAG_trace_maps) {
+  if (FLAG_log_maps) {
     LOG(isolate, MapEvent("Deprecate", handle(*this, isolate), Handle<Map>()));
   }
   dependent_code().DeoptimizeDependentCodeGroup(
@@ -659,7 +670,7 @@ Map Map::FindRootMap(Isolate* isolate) const {
 }
 
 Map Map::FindFieldOwner(Isolate* isolate, InternalIndex descriptor) const {
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   DCHECK_EQ(kField, instance_descriptors(isolate, kRelaxedLoad)
                         .GetDetails(descriptor)
                         .location());
@@ -680,7 +691,7 @@ void Map::UpdateFieldType(Isolate* isolate, InternalIndex descriptor,
                           const MaybeObjectHandle& new_wrapped_type) {
   DCHECK(new_wrapped_type->IsSmi() || new_wrapped_type->IsWeak());
   // We store raw pointers in the queue, so no allocations are allowed.
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   PropertyDetails details =
       instance_descriptors(kRelaxedLoad).GetDetails(descriptor);
   if (details.location() != kField) return;
@@ -698,7 +709,7 @@ void Map::UpdateFieldType(Isolate* isolate, InternalIndex descriptor,
     Map current = backlog.front();
     backlog.pop();
 
-    TransitionsAccessor transitions(isolate, current, &no_allocation);
+    TransitionsAccessor transitions(isolate, current, &no_gc);
     int num_transitions = transitions.NumberOfTransitions();
     for (int i = 0; i < num_transitions; ++i) {
       Map target = transitions.GetTarget(i);
@@ -845,13 +856,12 @@ Handle<Map> Map::ReconfigureElementsKind(Isolate* isolate, Handle<Map> map,
 namespace {
 
 Map SearchMigrationTarget(Isolate* isolate, Map old_map) {
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   DisallowDeoptimization no_deoptimization(isolate);
 
   Map target = old_map;
   do {
-    target = TransitionsAccessor(isolate, target, &no_allocation)
-                 .GetMigrationTarget();
+    target = TransitionsAccessor(isolate, target, &no_gc).GetMigrationTarget();
   } while (!target.is_null() && target.is_deprecated());
   if (target.is_null()) return Map();
 
@@ -882,7 +892,7 @@ Map SearchMigrationTarget(Isolate* isolate, Map old_map) {
 // TODO(ishell): Move TryUpdate() and friends to MapUpdater
 // static
 MaybeHandle<Map> Map::TryUpdate(Isolate* isolate, Handle<Map> old_map) {
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   DisallowDeoptimization no_deoptimization(isolate);
 
   if (!old_map->is_deprecated()) return old_map;
@@ -897,8 +907,7 @@ MaybeHandle<Map> Map::TryUpdate(Isolate* isolate, Handle<Map> old_map) {
   Map new_map = TryUpdateSlow(isolate, *old_map);
   if (new_map.is_null()) return MaybeHandle<Map>();
   if (FLAG_fast_map_update) {
-    TransitionsAccessor(isolate, *old_map, &no_allocation)
-        .SetMigrationTarget(new_map);
+    TransitionsAccessor(isolate, *old_map, &no_gc).SetMigrationTarget(new_map);
   }
   return handle(new_map, isolate);
 }
@@ -916,14 +925,14 @@ struct IntegrityLevelTransitionInfo {
 };
 
 IntegrityLevelTransitionInfo DetectIntegrityLevelTransitions(
-    Map map, Isolate* isolate, DisallowHeapAllocation* no_allocation) {
+    Map map, Isolate* isolate, DisallowGarbageCollection* no_gc) {
   IntegrityLevelTransitionInfo info(map);
 
   // Figure out the most restrictive integrity level transition (it should
   // be the last one in the transition tree).
   DCHECK(!map.is_extensible());
   Map previous = Map::cast(map.GetBackPointer(isolate));
-  TransitionsAccessor last_transitions(isolate, previous, no_allocation);
+  TransitionsAccessor last_transitions(isolate, previous, no_gc);
   if (!last_transitions.HasIntegrityLevelTransitionTo(
           map, &(info.integrity_level_symbol), &(info.integrity_level))) {
     // The last transition was not integrity level transition - just bail out.
@@ -941,7 +950,7 @@ IntegrityLevelTransitionInfo DetectIntegrityLevelTransitions(
   // with integrity level transitions, just bail out.
   while (!source_map.is_extensible()) {
     previous = Map::cast(source_map.GetBackPointer(isolate));
-    TransitionsAccessor transitions(isolate, previous, no_allocation);
+    TransitionsAccessor transitions(isolate, previous, no_gc);
     if (!transitions.HasIntegrityLevelTransitionTo(source_map)) {
       return info;
     }
@@ -959,7 +968,7 @@ IntegrityLevelTransitionInfo DetectIntegrityLevelTransitions(
 }  // namespace
 
 Map Map::TryUpdateSlow(Isolate* isolate, Map old_map) {
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   DisallowDeoptimization no_deoptimization(isolate);
 
   // Check the state of the root map.
@@ -982,7 +991,7 @@ Map Map::TryUpdateSlow(Isolate* isolate, Map old_map) {
   if (root_map.is_extensible() != old_map.is_extensible()) {
     DCHECK(!old_map.is_extensible());
     DCHECK(root_map.is_extensible());
-    info = DetectIntegrityLevelTransitions(old_map, isolate, &no_allocation);
+    info = DetectIntegrityLevelTransitions(old_map, isolate, &no_gc);
     // Bail out if there were some private symbol transitions mixed up
     // with the integrity level transitions.
     if (!info.has_integrity_level_transition) return Map();
@@ -1008,7 +1017,7 @@ Map Map::TryUpdateSlow(Isolate* isolate, Map old_map) {
 
   if (info.has_integrity_level_transition) {
     // Now replay the integrity level transition.
-    result = TransitionsAccessor(isolate, result, &no_allocation)
+    result = TransitionsAccessor(isolate, result, &no_gc)
                  .SearchSpecial(info.integrity_level_symbol);
   }
 
@@ -1020,7 +1029,7 @@ Map Map::TryUpdateSlow(Isolate* isolate, Map old_map) {
 }
 
 Map Map::TryReplayPropertyTransitions(Isolate* isolate, Map old_map) {
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   DisallowDeoptimization no_deoptimization(isolate);
 
   int root_nof = NumberOfOwnDescriptors();
@@ -1032,7 +1041,7 @@ Map Map::TryReplayPropertyTransitions(Isolate* isolate, Map old_map) {
   for (InternalIndex i : InternalIndex::Range(root_nof, old_nof)) {
     PropertyDetails old_details = old_descriptors.GetDetails(i);
     Map transition =
-        TransitionsAccessor(isolate, new_map, &no_allocation)
+        TransitionsAccessor(isolate, new_map, &no_gc)
             .SearchTransition(old_descriptors.GetKey(i), old_details.kind(),
                               old_details.attributes());
     if (transition.is_null()) return Map();
@@ -1111,7 +1120,7 @@ void Map::EnsureDescriptorSlack(Isolate* isolate, Handle<Map> map, int slack) {
   Handle<DescriptorArray> new_descriptors =
       DescriptorArray::CopyUpTo(isolate, descriptors, old_size, slack);
 
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   // The descriptors are still the same, so keep the layout descriptor.
   LayoutDescriptor layout_descriptor = map->GetLayoutDescriptor();
 
@@ -1214,7 +1223,7 @@ static bool HasElementsKind(MapHandles const& maps,
 
 Map Map::FindElementsKindTransitionedMap(Isolate* isolate,
                                          MapHandles const& candidates) {
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   DisallowDeoptimization no_deoptimization(isolate);
 
   if (IsDetached(isolate)) return Map();
@@ -1307,7 +1316,7 @@ Handle<Map> Map::TransitionElementsTo(Isolate* isolate, Handle<Map> map,
     }
   } else if (IsFastElementsKind(from_kind) && IsFastElementsKind(to_kind)) {
     // Reuse map transitions for JSArrays.
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     if (native_context.GetInitialJSArrayMap(from_kind) == *map) {
       Object maybe_transitioned_map =
           native_context.get(Context::ArrayMapIndex(to_kind));
@@ -1454,8 +1463,8 @@ Handle<Map> Map::RawCopy(Isolate* isolate, Handle<Map> map, int instance_size,
       inobject_properties);
   Handle<HeapObject> prototype(map->prototype(), isolate);
   Map::SetPrototype(isolate, result, prototype);
-  result->set_constructor_or_backpointer(map->GetConstructor());
-  result->set_relaxed_bit_field(map->bit_field());
+  result->set_constructor_or_back_pointer(map->GetConstructor());
+  result->set_bit_field(map->bit_field());
   result->set_bit_field2(map->bit_field2());
   int new_bit_field3 = map->bit_field3();
   new_bit_field3 = Bits3::OwnsDescriptorsBit::update(new_bit_field3, true);
@@ -1531,6 +1540,9 @@ Handle<Map> Map::Normalize(Isolate* isolate, Handle<Map> fast_map,
                           Map::kSize - offset));
     }
 #endif
+    if (FLAG_log_maps) {
+      LOG(isolate, MapEvent("NormalizeCached", fast_map, new_map, reason));
+    }
   } else {
     new_map = Map::CopyNormalized(isolate, fast_map, mode);
     new_map->set_elements_kind(new_elements_kind);
@@ -1538,9 +1550,9 @@ Handle<Map> Map::Normalize(Isolate* isolate, Handle<Map> fast_map,
       cache->Set(fast_map, new_map);
       isolate->counters()->maps_normalized()->Increment();
     }
-  }
-  if (FLAG_trace_maps) {
-    LOG(isolate, MapEvent("Normalize", fast_map, new_map, reason));
+    if (FLAG_log_maps) {
+      LOG(isolate, MapEvent("Normalize", fast_map, new_map, reason));
+    }
   }
   fast_map->NotifyLeafMapLayoutChange(isolate);
   return new_map;
@@ -1597,13 +1609,9 @@ void EnsureInitialMap(Isolate* isolate, Handle<Map> map) {
          // Same holds for GeneratorFunction and its initial map.
          *map == *isolate->generator_function_map() ||
          *map == *isolate->generator_function_with_name_map() ||
-         *map == *isolate->generator_function_with_home_object_map() ||
-         *map == *isolate->generator_function_with_name_and_home_object_map() ||
          // AsyncFunction has Null as a constructor.
          *map == *isolate->async_function_map() ||
-         *map == *isolate->async_function_with_name_map() ||
-         *map == *isolate->async_function_with_home_object_map() ||
-         *map == *isolate->async_function_with_name_and_home_object_map());
+         *map == *isolate->async_function_with_name_map());
 #endif
   // Initial maps must not contain descriptors in the descriptors array
   // that do not belong to the map.
@@ -1695,7 +1703,7 @@ Handle<Map> Map::ShareDescriptor(Isolate* isolate, Handle<Map> map,
           : handle(LayoutDescriptor::FastPointerLayout(), isolate);
 
   {
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     descriptors->Append(descriptor);
     result->InitializeDescriptors(isolate, *descriptors, *layout_descriptor);
   }
@@ -1724,12 +1732,12 @@ void Map::ConnectTransition(Isolate* isolate, Handle<Map> parent,
   }
   if (parent->IsDetached(isolate)) {
     DCHECK(child->IsDetached(isolate));
-    if (FLAG_trace_maps) {
+    if (FLAG_log_maps) {
       LOG(isolate, MapEvent("Transition", parent, child, "prototype", name));
     }
   } else {
     TransitionsAccessor(isolate, parent).Insert(name, child, flag);
-    if (FLAG_trace_maps) {
+    if (FLAG_log_maps) {
       LOG(isolate, MapEvent("Transition", parent, child, "", name));
     }
   }
@@ -1743,6 +1751,7 @@ Handle<Map> Map::CopyReplaceDescriptors(
   DCHECK(descriptors->IsSortedNoDuplicates());
 
   Handle<Map> result = CopyDropDescriptors(isolate, map);
+  bool is_connected = false;
 
   // Properly mark the {result} if the {name} is an "interesting symbol".
   Handle<Name> name;
@@ -1759,17 +1768,14 @@ Handle<Map> Map::CopyReplaceDescriptors(
 
       DCHECK(!maybe_name.is_null());
       ConnectTransition(isolate, map, result, name, simple_flag);
+      is_connected = true;
     } else {
       descriptors->GeneralizeAllFields();
       result->InitializeDescriptors(isolate, *descriptors,
                                     LayoutDescriptor::FastPointerLayout());
     }
   }
-  if (FLAG_trace_maps &&
-      // Mirror conditions above that did not call ConnectTransition().
-      (map->IsDetached(isolate) ||
-       !(flag == INSERT_TRANSITION &&
-         TransitionsAccessor(isolate, map).CanHaveMoreTransitions()))) {
+  if (FLAG_log_maps && !is_connected) {
     LOG(isolate, MapEvent("ReplaceDescriptors", map, result, reason,
                           maybe_name.is_null() ? Handle<HeapObject>() : name));
   }
@@ -1911,7 +1917,7 @@ Handle<Map> Map::CopyAsElementsKind(Isolate* isolate, Handle<Map> map,
 
 Handle<Map> Map::AsLanguageMode(Isolate* isolate, Handle<Map> initial_map,
                                 Handle<SharedFunctionInfo> shared_info) {
-  DCHECK_EQ(JS_FUNCTION_TYPE, initial_map->instance_type());
+  DCHECK(InstanceTypeChecker::IsJSFunction(initial_map->instance_type()));
   // Initial map for sloppy mode function is stored in the function
   // constructor. Initial maps for strict mode are cached as special transitions
   // using |strict_function_transition_symbol| as a key.
@@ -2195,7 +2201,7 @@ Handle<Map> Map::TransitionToDataProperty(Isolate* isolate, Handle<Map> map,
     const char* reason = "TooManyFastProperties";
 #if V8_TRACE_MAPS
     std::unique_ptr<ScopedVector<char>> buffer;
-    if (FLAG_trace_maps) {
+    if (FLAG_log_maps) {
       ScopedVector<char> name_buffer(100);
       name->NameShortPrint(name_buffer);
       buffer.reset(new ScopedVector<char>(128));
@@ -2482,7 +2488,7 @@ bool Map::EquivalentToForTransition(const Map other) const {
   if (bit_field() != other.bit_field()) return false;
   if (new_target_is_base() != other.new_target_is_base()) return false;
   if (prototype() != other.prototype()) return false;
-  if (instance_type() == JS_FUNCTION_TYPE) {
+  if (InstanceTypeChecker::IsJSFunction(instance_type())) {
     // JSFunctions require more checks to ensure that sloppy function is
     // not equivalent to strict function.
     int nof =
@@ -2536,7 +2542,7 @@ static void GetMinInobjectSlack(Map map, void* data) {
 }
 
 int Map::ComputeMinObjectSlack(Isolate* isolate) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   // Has to be an initial map.
   DCHECK(GetBackPointer().IsUndefined(isolate));
 
@@ -2564,7 +2570,7 @@ static void StopSlackTracking(Map map, void* data) {
 }
 
 void Map::CompleteInobjectSlackTracking(Isolate* isolate) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   // Has to be an initial map.
   DCHECK(GetBackPointer().IsUndefined(isolate));
 
@@ -2716,7 +2722,7 @@ Handle<NormalizedMapCache> NormalizedMapCache::New(Isolate* isolate) {
 MaybeHandle<Map> NormalizedMapCache::Get(Handle<Map> fast_map,
                                          ElementsKind elements_kind,
                                          PropertyNormalizationMode mode) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   MaybeObject value = WeakFixedArray::Get(GetIndex(fast_map));
   HeapObject heap_object;
   if (!value->GetHeapObjectIfWeak(&heap_object)) {
@@ -2732,7 +2738,7 @@ MaybeHandle<Map> NormalizedMapCache::Get(Handle<Map> fast_map,
 }
 
 void NormalizedMapCache::Set(Handle<Map> fast_map, Handle<Map> normalized_map) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   DCHECK(normalized_map->is_dictionary_map());
   WeakFixedArray::Set(GetIndex(fast_map),
                       HeapObjectReference::Weak(*normalized_map));

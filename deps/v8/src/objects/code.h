@@ -7,6 +7,7 @@
 
 #include "src/base/bit-field.h"
 #include "src/codegen/handler-table.h"
+#include "src/deoptimizer/translation-array.h"
 #include "src/objects/code-kind.h"
 #include "src/objects/contexts.h"
 #include "src/objects/fixed-array.h"
@@ -465,6 +466,8 @@ class Code : public HeapObject {
                                          : (COMPRESS_POINTERS_BOOL ? 12 : 24);
 #elif V8_TARGET_ARCH_S390X
   static constexpr int kHeaderPaddingSize = COMPRESS_POINTERS_BOOL ? 12 : 24;
+#elif V8_TARGET_ARCH_RISCV64
+  static constexpr int kHeaderPaddingSize = 24;
 #else
 #error Unknown architecture.
 #endif
@@ -530,7 +533,7 @@ class Code::OptimizedCodeIterator {
   Code current_code_;
   Isolate* isolate_;
 
-  DISALLOW_HEAP_ALLOCATION(no_gc)
+  DISALLOW_GARBAGE_COLLECTION(no_gc)
 };
 
 class AbstractCode : public HeapObject {
@@ -850,8 +853,9 @@ class DeoptimizationData : public FixedArray {
   static const int kSharedFunctionInfoIndex = 6;
   static const int kInliningPositionsIndex = 7;
   static const int kDeoptExitStartIndex = 8;
-  static const int kNonLazyDeoptCountIndex = 9;
-  static const int kFirstDeoptEntryIndex = 10;
+  static const int kEagerSoftAndBailoutDeoptCountIndex = 9;
+  static const int kLazyDeoptCountIndex = 10;
+  static const int kFirstDeoptEntryIndex = 11;
 
   // Offsets of deopt entry elements relative to the start of the entry.
   static const int kBytecodeOffsetRawOffset = 0;
@@ -864,7 +868,7 @@ class DeoptimizationData : public FixedArray {
   inline type name() const;                \
   inline void Set##name(type value);
 
-  DECL_ELEMENT_ACCESSORS(TranslationByteArray, ByteArray)
+  DECL_ELEMENT_ACCESSORS(TranslationByteArray, TranslationArray)
   DECL_ELEMENT_ACCESSORS(InlinedFunctionCount, Smi)
   DECL_ELEMENT_ACCESSORS(LiteralArray, FixedArray)
   DECL_ELEMENT_ACCESSORS(OsrBytecodeOffset, Smi)
@@ -873,7 +877,8 @@ class DeoptimizationData : public FixedArray {
   DECL_ELEMENT_ACCESSORS(SharedFunctionInfo, Object)
   DECL_ELEMENT_ACCESSORS(InliningPositions, PodArray<InliningPosition>)
   DECL_ELEMENT_ACCESSORS(DeoptExitStart, Smi)
-  DECL_ELEMENT_ACCESSORS(NonLazyDeoptCount, Smi)
+  DECL_ELEMENT_ACCESSORS(EagerSoftAndBailoutDeoptCount, Smi)
+  DECL_ELEMENT_ACCESSORS(LazyDeoptCount, Smi)
 
 #undef DECL_ELEMENT_ACCESSORS
 
@@ -888,9 +893,9 @@ class DeoptimizationData : public FixedArray {
 
 #undef DECL_ENTRY_ACCESSORS
 
-  inline BailoutId BytecodeOffset(int i);
+  inline BytecodeOffset GetBytecodeOffset(int i);
 
-  inline void SetBytecodeOffset(int i, BailoutId value);
+  inline void SetBytecodeOffset(int i, BytecodeOffset value);
 
   inline int DeoptCount();
 

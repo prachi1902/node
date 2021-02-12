@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "src/base/bits.h"
+#include "src/base/platform/wrappers.h"
 #include "src/codegen/interface-descriptors.h"
 #include "src/codegen/macro-assembler.h"
 #include "src/codegen/register-configuration.h"
@@ -300,13 +301,13 @@ SafeStackFrameIterator::SafeStackFrameIterator(Isolate* isolate, Address pc,
     frame_ = nullptr;
     return;
   }
-  // 'Fast C calls' are a special type of C call where we call directly from JS
-  // to C without an exit frame inbetween. The CEntryStub is responsible for
-  // setting Isolate::c_entry_fp, meaning that it won't be set for fast C calls.
-  // To keep the stack iterable, we store the FP and PC of the caller of the
-  // fast C call on the isolate. This is guaranteed to be the topmost JS frame,
-  // because fast C calls cannot call back into JS. We start iterating the stack
-  // from this topmost JS frame.
+  // 'Fast C calls' are a special type of C call where we call directly from
+  // JS to C without an exit frame inbetween. The CEntryStub is responsible
+  // for setting Isolate::c_entry_fp, meaning that it won't be set for fast C
+  // calls. To keep the stack iterable, we store the FP and PC of the caller
+  // of the fast C call on the isolate. This is guaranteed to be the topmost
+  // JS frame, because fast C calls cannot call back into JS. We start
+  // iterating the stack from this topmost JS frame.
   if (fast_c_fp) {
     DCHECK_NE(kNullAddress, isolate->isolate_data()->fast_c_call_caller_pc());
     type = StackFrame::Type::OPTIMIZED;
@@ -401,6 +402,7 @@ void SafeStackFrameIterator::AdvanceOneFrame() {
   DCHECK(!done());
   StackFrame* last_frame = frame_;
   Address last_sp = last_frame->sp(), last_fp = last_frame->fp();
+
   // Before advancing to the next stack frame, perform pointer validity tests.
   if (!IsValidFrame(last_frame) || !IsValidCaller(last_frame)) {
     frame_ = nullptr;
@@ -432,15 +434,6 @@ bool SafeStackFrameIterator::IsValidCaller(StackFrame* frame) {
     Address caller_fp =
         Memory<Address>(frame->fp() + EntryFrameConstants::kCallerFPOffset);
     if (!IsValidExitFrame(caller_fp)) return false;
-  } else if (frame->is_arguments_adaptor()) {
-    // See ArgumentsAdaptorFrame::GetCallerStackPointer. It assumes that
-    // the number of arguments is stored on stack as Smi. We need to check
-    // that it really an Smi.
-    Object number_of_args =
-        reinterpret_cast<ArgumentsAdaptorFrame*>(frame)->GetExpression(0);
-    if (!number_of_args.IsSmi()) {
-      return false;
-    }
   }
   frame->ComputeCallerState(&state);
   return IsValidStackAddress(state.sp) && IsValidStackAddress(state.fp) &&
@@ -634,7 +627,6 @@ StackFrame::Type StackFrame::ComputeType(const StackFrameIteratorBase* iterator,
     case STUB:
     case INTERNAL:
     case CONSTRUCT:
-    case ARGUMENTS_ADAPTOR:
     case WASM_TO_JS:
     case WASM:
     case WASM_COMPILE_LAZY:
@@ -827,7 +819,7 @@ const char* StringForStackFrameType(StackFrame::Type type) {
 
 void StackFrame::Print(StringStream* accumulator, PrintMode mode,
                        int index) const {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   PrintIndex(accumulator, mode, index);
   accumulator->Add(StringForStackFrameType(type()));
   accumulator->Add(" [pc: %p]\n", reinterpret_cast<void*>(pc()));
@@ -835,7 +827,7 @@ void StackFrame::Print(StringStream* accumulator, PrintMode mode,
 
 void BuiltinExitFrame::Print(StringStream* accumulator, PrintMode mode,
                              int index) const {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   Object receiver = this->receiver();
   JSFunction function = this->function();
 
@@ -936,7 +928,15 @@ void CommonFrame::IterateCompiledFrame(RootVisitor* v) const {
     code = entry->code;
     safepoint_entry = entry->safepoint_entry;
     stack_slots = code.stack_slots();
-    has_tagged_params = code.has_tagged_params();
+
+    // With inlined JS-to-Wasm calls, we can be in an OptimizedFrame and
+    // directly call a Wasm function from JavaScript. In this case the
+    // parameters we pass to the callee are not tagged.
+    wasm::WasmCode* wasm_callee =
+        isolate()->wasm_engine()->code_manager()->LookupCode(callee_pc());
+    bool is_wasm_call = (wasm_callee != nullptr);
+
+    has_tagged_params = !is_wasm_call && code.has_tagged_params();
   }
   uint32_t slot_space = stack_slots * kSystemPointerSize;
 
@@ -955,7 +955,6 @@ void CommonFrame::IterateCompiledFrame(RootVisitor* v) const {
       case JAVA_SCRIPT_BUILTIN_CONTINUATION:
       case JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH:
       case BUILTIN_EXIT:
-      case ARGUMENTS_ADAPTOR:
       case STUB:
       case INTERNAL:
       case CONSTRUCT:
@@ -1084,12 +1083,7 @@ void JavaScriptFrame::SetParameterValue(int index, Object value) const {
 }
 
 bool JavaScriptFrame::IsConstructor() const {
-  Address fp = caller_fp();
-  if (has_adapted_arguments()) {
-    // Skip the arguments adaptor frame and look at the real caller.
-    fp = Memory<Address>(fp + StandardFrameConstants::kCallerFPOffset);
-  }
-  return IsConstructFrame(fp);
+  return IsConstructFrame(caller_fp());
 }
 
 bool JavaScriptFrame::HasInlinedFrames() const {
@@ -1187,7 +1181,7 @@ void JavaScriptFrame::PrintFunctionAndOffset(JSFunction function,
                                              AbstractCode code, int code_offset,
                                              FILE* file,
                                              bool print_line_number) {
-  PrintF(file, "%s", CodeKindIsOptimizedJSFunction(code.kind()) ? "*" : "~");
+  PrintF(file, "%s", CodeKindToMarker(code.kind()));
   function.PrintName(file);
   PrintF(file, "+%d", code_offset);
   if (print_line_number) {
@@ -1215,7 +1209,7 @@ void JavaScriptFrame::PrintFunctionAndOffset(JSFunction function,
 void JavaScriptFrame::PrintTop(Isolate* isolate, FILE* file, bool print_args,
                                bool print_line_number) {
   // constructor calls
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   JavaScriptFrameIterator it(isolate);
   while (!it.done()) {
     if (it.frame()->is_java_script()) {
@@ -1230,8 +1224,8 @@ void JavaScriptFrame::PrintTop(Isolate* isolate, FILE* file, bool print_args,
         Code code = frame->unchecked_code();
         code_offset = static_cast<int>(frame->pc() - code.InstructionStart());
       }
-      PrintFunctionAndOffset(function, function.abstract_code(), code_offset,
-                             file, print_line_number);
+      PrintFunctionAndOffset(function, function.abstract_code(isolate),
+                             code_offset, file, print_line_number);
       if (print_args) {
         // function arguments
         // (we are intentionally only printing the actually
@@ -1281,12 +1275,10 @@ int CommonFrameWithJSLinkage::ComputeParametersCount() const {
   return function().shared().internal_formal_parameter_count();
 }
 
-#ifdef V8_NO_ARGUMENTS_ADAPTOR
 int JavaScriptFrame::GetActualArgumentCount() const {
   return static_cast<int>(
       Memory<intptr_t>(fp() + StandardFrameConstants::kArgCOffset));
 }
-#endif
 
 Handle<FixedArray> CommonFrameWithJSLinkage::GetParameters() const {
   if (V8_LIKELY(!FLAG_detailed_error_stack_trace)) {
@@ -1376,8 +1368,10 @@ void FrameSummary::JavaScriptFrameSummary::EnsureSourcePositionsAvailable() {
 }
 
 bool FrameSummary::JavaScriptFrameSummary::AreSourcePositionsAvailable() const {
-  return !FLAG_enable_lazy_source_positions ||
-         function()->shared().GetBytecodeArray().HasSourcePositionTable();
+  return !FLAG_enable_lazy_source_positions || function()
+                                                   ->shared()
+                                                   .GetBytecodeArray(isolate())
+                                                   .HasSourcePositionTable();
 }
 
 bool FrameSummary::JavaScriptFrameSummary::is_subject_to_debugging() const {
@@ -1565,14 +1559,15 @@ void OptimizedFrame::Summarize(std::vector<FrameSummary>* frames) const {
           it->kind() ==
               TranslatedFrame::kJavaScriptBuiltinContinuationWithCatch) {
         code_offset = 0;
-        abstract_code =
-            handle(AbstractCode::cast(isolate()->builtins()->builtin(
-                       Builtins::GetBuiltinFromBailoutId(it->node_id()))),
-                   isolate());
+        abstract_code = handle(
+            AbstractCode::cast(isolate()->builtins()->builtin(
+                Builtins::GetBuiltinFromBytecodeOffset(it->bytecode_offset()))),
+            isolate());
       } else {
         DCHECK_EQ(it->kind(), TranslatedFrame::kInterpretedFunction);
-        code_offset = it->node_id().ToInt();  // Points to current bytecode.
-        abstract_code = handle(shared_info->abstract_code(), isolate());
+        code_offset = it->bytecode_offset().ToInt();
+        abstract_code =
+            handle(shared_info->abstract_code(isolate()), isolate());
       }
 
       // Append full summary of the encountered JS frame.
@@ -1648,17 +1643,17 @@ void OptimizedFrame::GetFunctions(
     return JavaScriptFrame::GetFunctions(functions);
   }
 
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   int deopt_index = Safepoint::kNoDeoptimizationIndex;
   DeoptimizationData const data = GetDeoptimizationData(&deopt_index);
   DCHECK(!data.is_null());
   DCHECK_NE(Safepoint::kNoDeoptimizationIndex, deopt_index);
   FixedArray const literal_array = data.LiteralArray();
 
-  TranslationIterator it(data.TranslationByteArray(),
-                         data.TranslationIndex(deopt_index).value());
-  Translation::Opcode opcode = static_cast<Translation::Opcode>(it.Next());
-  DCHECK_EQ(Translation::BEGIN, opcode);
+  TranslationArrayIterator it(data.TranslationByteArray(),
+                              data.TranslationIndex(deopt_index).value());
+  TranslationOpcode opcode = TranslationOpcodeFromInt(it.Next());
+  DCHECK_EQ(TranslationOpcode::BEGIN, opcode);
   it.Next();  // Skip frame count.
   int jsframe_count = it.Next();
   it.Next();  // Skip update feedback count.
@@ -1666,11 +1661,11 @@ void OptimizedFrame::GetFunctions(
   // We insert the frames in reverse order because the frames
   // in the deoptimization translation are ordered bottom-to-top.
   while (jsframe_count != 0) {
-    opcode = static_cast<Translation::Opcode>(it.Next());
-    if (opcode == Translation::INTERPRETED_FRAME ||
-        opcode == Translation::JAVA_SCRIPT_BUILTIN_CONTINUATION_FRAME ||
-        opcode ==
-            Translation::JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH_FRAME) {
+    opcode = TranslationOpcodeFromInt(it.Next());
+    if (opcode == TranslationOpcode::INTERPRETED_FRAME ||
+        opcode == TranslationOpcode::JAVA_SCRIPT_BUILTIN_CONTINUATION_FRAME ||
+        opcode == TranslationOpcode::
+                      JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH_FRAME) {
       it.Next();  // Skip bailout id.
       jsframe_count--;
 
@@ -1679,10 +1674,10 @@ void OptimizedFrame::GetFunctions(
       functions->push_back(SharedFunctionInfo::cast(shared));
 
       // Skip over remaining operands to advance to the next opcode.
-      it.Skip(Translation::NumberOfOperandsFor(opcode) - 2);
+      it.Skip(TranslationOpcodeOperandCount(opcode) - 2);
     } else {
       // Skip over operands to advance to the next opcode.
-      it.Skip(Translation::NumberOfOperandsFor(opcode));
+      it.Skip(TranslationOpcodeOperandCount(opcode));
     }
   }
 }
@@ -1781,15 +1776,6 @@ void InterpretedFrame::Summarize(std::vector<FrameSummary>* functions) const {
   functions->push_back(summary);
 }
 
-int ArgumentsAdaptorFrame::ComputeParametersCount() const {
-  const int offset = ArgumentsAdaptorFrameConstants::kLengthOffset;
-  return Smi::ToInt(Object(base::Memory<Address>(fp() + offset)));
-}
-
-Code ArgumentsAdaptorFrame::unchecked_code() const {
-  return isolate()->builtins()->builtin(Builtins::kArgumentsAdaptorTrampoline);
-}
-
 JSFunction BuiltinFrame::function() const {
   const int offset = BuiltinFrameConstants::kFunctionOffset;
   return JSFunction::cast(Object(base::Memory<Address>(fp() + offset)));
@@ -1799,8 +1785,6 @@ int BuiltinFrame::ComputeParametersCount() const {
   const int offset = BuiltinFrameConstants::kLengthOffset;
   return Smi::ToInt(Object(base::Memory<Address>(fp() + offset)));
 }
-
-Code InternalFrame::unchecked_code() const { return Code(); }
 
 void WasmFrame::Print(StringStream* accumulator, PrintMode mode,
                       int index) const {
@@ -1817,7 +1801,7 @@ void WasmFrame::Print(StringStream* accumulator, PrintMode mode,
   const int kMaxPrintedFunctionName = 64;
   char func_name[kMaxPrintedFunctionName + 1];
   int func_name_len = std::min(kMaxPrintedFunctionName, raw_func_name.length());
-  memcpy(func_name, raw_func_name.begin(), func_name_len);
+  base::Memcpy(func_name, raw_func_name.begin(), func_name_len);
   func_name[func_name_len] = '\0';
   int pos = position();
   const wasm::WasmModule* module = wasm_instance().module_object().module();
@@ -1828,10 +1812,6 @@ void WasmFrame::Print(StringStream* accumulator, PrintMode mode,
                    static_cast<int>(pc() - instruction_start), pos,
                    pos - func_code_offset);
   if (mode != OVERVIEW) accumulator->Add("\n");
-}
-
-Code WasmFrame::unchecked_code() const {
-  return isolate()->FindCodeObject(pc());
 }
 
 wasm::WasmCode* WasmFrame::wasm_code() const {
@@ -1853,7 +1833,8 @@ WasmModuleObject WasmFrame::module_object() const {
 }
 
 uint32_t WasmFrame::function_index() const {
-  return FrameSummary::GetSingle(this).AsWasm().function_index();
+  wasm::WasmCodeRefScope code_ref_scope;
+  return wasm_code()->index();
 }
 
 Script WasmFrame::script() const { return module_object().script(); }
@@ -2001,7 +1982,7 @@ void JavaScriptFrame::Print(StringStream* accumulator, PrintMode mode,
   Handle<SharedFunctionInfo> shared = handle(function().shared(), isolate());
   SharedFunctionInfo::EnsureSourcePositionsAvailable(isolate(), shared);
 
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   Object receiver = this->receiver();
   JSFunction function = this->function();
 
@@ -2111,34 +2092,6 @@ void JavaScriptFrame::Print(StringStream* accumulator, PrintMode mode,
   accumulator->Add("}\n\n");
 }
 
-void ArgumentsAdaptorFrame::Print(StringStream* accumulator, PrintMode mode,
-                                  int index) const {
-  int actual = ComputeParametersCount();
-  int expected = -1;
-  JSFunction function = this->function();
-  expected = function.shared().internal_formal_parameter_count();
-
-  PrintIndex(accumulator, mode, index);
-  accumulator->Add("arguments adaptor frame: %d->%d", actual, expected);
-  if (mode == OVERVIEW) {
-    accumulator->Add("\n");
-    return;
-  }
-  accumulator->Add(" {\n");
-
-  // Print actual arguments.
-  if (actual > 0) accumulator->Add("  // actual arguments\n");
-  for (int i = 0; i < actual; i++) {
-    accumulator->Add("  [%02d] : %o", i, GetParameter(i));
-    if (expected != -1 && i >= expected) {
-      accumulator->Add("  // not passed to callee");
-    }
-    accumulator->Add("\n");
-  }
-
-  accumulator->Add("}\n\n");
-}
-
 void EntryFrame::Iterate(RootVisitor* v) const {
   IteratePc(v, pc_address(), constant_pool_address(), LookupCode());
 }
@@ -2222,13 +2175,11 @@ InnerPointerToCodeCache::GetCacheEntry(Address inner_pointer) {
 
 namespace {
 
-int ArgumentPaddingSlots(int arg_count) {
-  return ShouldPadArguments(arg_count) ? 1 : 0;
-}
-
 // Some architectures need to push padding together with the TOS register
 // in order to maintain stack alignment.
-constexpr int TopOfStackRegisterPaddingSlots() { return kPadArguments ? 1 : 0; }
+constexpr int TopOfStackRegisterPaddingSlots() {
+  return ArgumentPaddingSlots(1);
+}
 
 bool BuiltinContinuationModeIsWithCatch(BuiltinContinuationMode mode) {
   switch (mode) {
@@ -2273,17 +2224,6 @@ InterpretedFrameInfo::InterpretedFrameInfo(int parameters_count_with_receiver,
       (parameters_count_with_receiver + parameter_padding_slots) *
           kSystemPointerSize;
   frame_size_in_bytes_ = frame_size_in_bytes_without_fixed_ + fixed_frame_size;
-}
-
-ArgumentsAdaptorFrameInfo::ArgumentsAdaptorFrameInfo(int translation_height) {
-  // Note: This is according to the Translation's notion of 'parameters' which
-  // differs to that of the SharedFunctionInfo, e.g. by including the receiver.
-  const int parameters_count = translation_height;
-  frame_size_in_bytes_without_fixed_ =
-      (parameters_count + ArgumentPaddingSlots(parameters_count)) *
-      kSystemPointerSize;
-  frame_size_in_bytes_ = frame_size_in_bytes_without_fixed_ +
-                         ArgumentsAdaptorFrameConstants::kFixedFrameSize;
 }
 
 ConstructStubFrameInfo::ConstructStubFrameInfo(int translation_height,

@@ -20,6 +20,7 @@
 #include "src/heap/concurrent-allocator-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/local-heap-inl.h"
+#include "src/heap/parked-scope.h"
 #include "src/heap/safepoint.h"
 #include "src/objects/heap-number.h"
 #include "src/objects/heap-object.h"
@@ -82,8 +83,6 @@ class ConcurrentAllocationThread final : public v8::base::Thread {
 
 UNINITIALIZED_TEST(ConcurrentAllocationInOldSpace) {
   FLAG_max_old_space_size = 32;
-  FLAG_concurrent_allocation = true;
-  FLAG_local_heaps = true;
   FLAG_stress_concurrent_allocation = false;
 
   v8::Isolate::CreateParams create_params;
@@ -117,8 +116,6 @@ UNINITIALIZED_TEST(ConcurrentAllocationInOldSpace) {
 
 UNINITIALIZED_TEST(ConcurrentAllocationInOldSpaceFromMainThread) {
   FLAG_max_old_space_size = 4;
-  FLAG_concurrent_allocation = true;
-  FLAG_local_heaps = true;
   FLAG_stress_concurrent_allocation = false;
 
   v8::Isolate::CreateParams create_params;
@@ -126,11 +123,7 @@ UNINITIALIZED_TEST(ConcurrentAllocationInOldSpaceFromMainThread) {
   v8::Isolate* isolate = v8::Isolate::New(create_params);
   Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
 
-  {
-    LocalHeap local_heap(i_isolate->heap(), ThreadKind::kMain);
-    UnparkedScope unparked_scope(&local_heap);
-    AllocateSomeObjects(&local_heap);
-  }
+  AllocateSomeObjects(i_isolate->main_thread_local_heap());
 
   isolate->Dispose();
 }
@@ -170,8 +163,6 @@ class LargeObjectConcurrentAllocationThread final : public v8::base::Thread {
 
 UNINITIALIZED_TEST(ConcurrentAllocationInLargeSpace) {
   FLAG_max_old_space_size = 32;
-  FLAG_concurrent_allocation = true;
-  FLAG_local_heaps = true;
   FLAG_stress_concurrent_allocation = false;
 
   v8::Isolate::CreateParams create_params;
@@ -246,9 +237,6 @@ class ConcurrentBlackAllocationThread final : public v8::base::Thread {
 };
 
 UNINITIALIZED_TEST(ConcurrentBlackAllocation) {
-  FLAG_concurrent_allocation = true;
-  FLAG_local_heaps = true;
-
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
   v8::Isolate* isolate = v8::Isolate::New(create_params);
@@ -313,8 +301,6 @@ UNINITIALIZED_TEST(ConcurrentWriteBarrier) {
     return;
   }
   ManualGCScope manual_gc_scope;
-  FLAG_concurrent_allocation = true;
-  FLAG_local_heaps = true;
 
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
@@ -380,8 +366,6 @@ UNINITIALIZED_TEST(ConcurrentRecordRelocSlot) {
   }
   FLAG_manual_evacuation_candidates_selection = true;
   ManualGCScope manual_gc_scope;
-  FLAG_concurrent_allocation = true;
-  FLAG_local_heaps = true;
 
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = CcTest::array_buffer_allocator();

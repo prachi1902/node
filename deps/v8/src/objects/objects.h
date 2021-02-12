@@ -166,7 +166,6 @@
 //       - BreakPoint
 //       - BreakPointInfo
 //       - CachedTemplateObject
-//       - StackFrameInfo
 //       - StackTraceFrame
 //       - CodeCache
 //       - PropertyDescriptorObject
@@ -182,13 +181,13 @@
 //         - SourceTextModule
 //         - SyntheticModule
 //       - SourceTextModuleInfoEntry
-//       - WasmValue
 //     - FeedbackCell
 //     - FeedbackVector
 //     - PreparseData
 //     - UncompiledData
 //       - UncompiledDataWithoutPreparseData
 //       - UncompiledDataWithPreparseData
+//     - SwissNameDictionary
 //
 // Formats of Object::ptr_:
 //  Smi:        [31 bit signed int] 0

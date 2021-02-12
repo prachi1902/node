@@ -256,6 +256,7 @@ void CallPrinter::VisitRegExpLiteral(RegExpLiteral* node) {
   Print("/");
   PrintLiteral(node->pattern(), false);
   Print("/");
+  if (node->flags() & RegExp::kHasIndices) Print("d");
   if (node->flags() & RegExp::kGlobal) Print("g");
   if (node->flags() & RegExp::kIgnoreCase) Print("i");
   if (node->flags() & RegExp::kLinear) Print("l");
@@ -551,7 +552,10 @@ void CallPrinter::VisitTemplateLiteral(TemplateLiteral* node) {
 
 void CallPrinter::VisitImportCallExpression(ImportCallExpression* node) {
   Print("ImportCall(");
-  Find(node->argument(), true);
+  Find(node->specifier(), true);
+  if (node->import_assertions()) {
+    Find(node->import_assertions(), true);
+  }
   Print(")");
 }
 
@@ -659,14 +663,6 @@ void AstPrinter::PrintLiteral(Literal* literal, bool quote) {
     case Literal::kString:
       PrintLiteral(literal->AsRawString(), quote);
       break;
-    case Literal::kSymbol:
-      const char* symbol;
-      switch (literal->AsSymbol()) {
-        case AstSymbol::kHomeObjectSymbol:
-          symbol = "HomeObjectSymbol";
-      }
-      Print("%s", symbol);
-      break;
     case Literal::kSmi:
       Print("%d", Smi::ToInt(literal->AsSmiLiteral()));
       break;
@@ -721,7 +717,7 @@ void AstPrinter::PrintLiteral(const AstConsString* value, bool quote) {
 
 //-----------------------------------------------------------------------------
 
-class IndentedScope {
+class V8_NODISCARD IndentedScope {
  public:
   IndentedScope(AstPrinter* printer, const char* txt)
       : ast_printer_(printer) {
@@ -744,7 +740,6 @@ class IndentedScope {
  private:
   AstPrinter* ast_printer_;
 };
-
 
 //-----------------------------------------------------------------------------
 
@@ -1162,6 +1157,7 @@ void AstPrinter::VisitRegExpLiteral(RegExpLiteral* node) {
   PrintLiteralIndented("PATTERN", node->raw_pattern(), false);
   int i = 0;
   EmbeddedVector<char, 128> buf;
+  if (node->flags() & RegExp::kHasIndices) buf[i++] = 'd';
   if (node->flags() & RegExp::kGlobal) buf[i++] = 'g';
   if (node->flags() & RegExp::kIgnoreCase) buf[i++] = 'i';
   if (node->flags() & RegExp::kLinear) buf[i++] = 'l';
@@ -1435,7 +1431,10 @@ void AstPrinter::VisitTemplateLiteral(TemplateLiteral* node) {
 
 void AstPrinter::VisitImportCallExpression(ImportCallExpression* node) {
   IndentedScope indent(this, "IMPORT-CALL", node->position());
-  Visit(node->argument());
+  Visit(node->specifier());
+  if (node->import_assertions()) {
+    Visit(node->import_assertions());
+  }
 }
 
 void AstPrinter::VisitThisExpression(ThisExpression* node) {

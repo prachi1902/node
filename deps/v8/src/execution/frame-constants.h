@@ -196,15 +196,6 @@ class TypedFrameConstants : public CommonFrameConstants {
 #define DEFINE_TYPED_FRAME_SIZES(count) \
   DEFINE_FRAME_SIZES(TypedFrameConstants, count)
 
-class ArgumentsAdaptorFrameConstants : public TypedFrameConstants {
- public:
-  // FP-relative.
-  static constexpr int kFunctionOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(0);
-  static constexpr int kLengthOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(1);
-  static constexpr int kPaddingOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(2);
-  DEFINE_TYPED_FRAME_SIZES(3);
-};
-
 class BuiltinFrameConstants : public TypedFrameConstants {
  public:
   // FP-relative.
@@ -348,6 +339,8 @@ inline static int FrameSlotToFPOffset(int slot) {
 #include "src/execution/mips64/frame-constants-mips64.h"  // NOLINT
 #elif V8_TARGET_ARCH_S390
 #include "src/execution/s390/frame-constants-s390.h"  // NOLINT
+#elif V8_TARGET_ARCH_RISCV64
+#include "src/execution/riscv64/frame-constants-riscv64.h"  // NOLINT
 #else
 #error Unsupported target architecture.
 #endif

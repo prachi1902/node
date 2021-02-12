@@ -60,7 +60,7 @@ ACCESSORS_CHECKED(Map, prototype_info, Object,
 // is explicitly allowlisted here. The former is never modified after the map
 // is setup but it's being read by concurrent marker when pointer compression
 // is enabled. The latter bit can be modified on a live objects.
-BIT_FIELD_ACCESSORS(Map, relaxed_bit_field, has_non_instance_prototype,
+BIT_FIELD_ACCESSORS(Map, bit_field, has_non_instance_prototype,
                     Map::Bits1::HasNonInstancePrototypeBit)
 BIT_FIELD_ACCESSORS(Map, bit_field, is_callable, Map::Bits1::IsCallableBit)
 BIT_FIELD_ACCESSORS(Map, bit_field, has_named_interceptor,
@@ -73,7 +73,7 @@ BIT_FIELD_ACCESSORS(Map, bit_field, is_access_check_needed,
                     Map::Bits1::IsAccessCheckNeededBit)
 BIT_FIELD_ACCESSORS(Map, bit_field, is_constructor,
                     Map::Bits1::IsConstructorBit)
-BIT_FIELD_ACCESSORS(Map, relaxed_bit_field, has_prototype_slot,
+BIT_FIELD_ACCESSORS(Map, bit_field, has_prototype_slot,
                     Map::Bits1::HasPrototypeSlotBit)
 
 // |bit_field2| fields.
@@ -322,11 +322,12 @@ Handle<Map> Map::AddMissingTransitionsForTesting(
 }
 
 InstanceType Map::instance_type() const {
-  return static_cast<InstanceType>(ReadField<uint16_t>(kInstanceTypeOffset));
+  return static_cast<InstanceType>(
+      RELAXED_READ_UINT16_FIELD(*this, kInstanceTypeOffset));
 }
 
 void Map::set_instance_type(InstanceType value) {
-  WriteField<uint16_t>(kInstanceTypeOffset, value);
+  RELAXED_WRITE_UINT16_FIELD(*this, kInstanceTypeOffset, value);
 }
 
 int Map::UnusedPropertyFields() const {
@@ -448,24 +449,20 @@ void Map::AccountAddedOutOfObjectPropertyField(int unused_in_property_array) {
   DCHECK_EQ(unused_in_property_array, UnusedPropertyFields());
 }
 
-byte Map::bit_field() const { return ReadField<byte>(kBitFieldOffset); }
+byte Map::bit_field() const {
+  return ACQUIRE_READ_BYTE_FIELD(*this, kBitFieldOffset);
+}
 
 void Map::set_bit_field(byte value) {
-  WriteField<byte>(kBitFieldOffset, value);
+  RELEASE_WRITE_BYTE_FIELD(*this, kBitFieldOffset, value);
 }
 
-byte Map::relaxed_bit_field() const {
-  return RELAXED_READ_BYTE_FIELD(*this, kBitFieldOffset);
+byte Map::bit_field2() const {
+  return ACQUIRE_READ_BYTE_FIELD(*this, kBitField2Offset);
 }
-
-void Map::set_relaxed_bit_field(byte value) {
-  RELAXED_WRITE_BYTE_FIELD(*this, kBitFieldOffset, value);
-}
-
-byte Map::bit_field2() const { return ReadField<byte>(kBitField2Offset); }
 
 void Map::set_bit_field2(byte value) {
-  WriteField<byte>(kBitField2Offset, value);
+  RELEASE_WRITE_BYTE_FIELD(*this, kBitField2Offset, value);
 }
 
 bool Map::is_abandoned_prototype_map() const {
@@ -565,11 +562,7 @@ bool Map::is_stable() const {
 bool Map::CanBeDeprecated() const {
   for (InternalIndex i : IterateOwnDescriptors()) {
     PropertyDetails details = instance_descriptors(kRelaxedLoad).GetDetails(i);
-    if (details.representation().IsNone()) return true;
-    if (details.representation().IsSmi()) return true;
-    if (details.representation().IsDouble() && FLAG_unbox_double_fields)
-      return true;
-    if (details.representation().IsHeapObject()) return true;
+    if (details.representation().MightCauseMapDeprecation()) return true;
     if (details.kind() == kData && details.location() == kDescriptor) {
       return true;
     }
@@ -670,11 +663,11 @@ void Map::InitializeDescriptors(Isolate* isolate, DescriptorArray descriptors,
 }
 
 void Map::set_bit_field3(uint32_t bits) {
-  RELAXED_WRITE_UINT32_FIELD(*this, kBitField3Offset, bits);
+  RELEASE_WRITE_UINT32_FIELD(*this, kBitField3Offset, bits);
 }
 
 uint32_t Map::bit_field3() const {
-  return RELAXED_READ_UINT32_FIELD(*this, kBitField3Offset);
+  return ACQUIRE_READ_UINT32_FIELD(*this, kBitField3Offset);
 }
 
 void Map::clear_padding() {
@@ -720,7 +713,7 @@ void Map::AppendDescriptor(Isolate* isolate, Descriptor* desc) {
 }
 
 DEF_GETTER(Map, GetBackPointer, HeapObject) {
-  Object object = constructor_or_backpointer(isolate);
+  Object object = constructor_or_back_pointer(isolate);
   // This is the equivalent of IsMap() but avoids reading the instance type so
   // it can be used concurrently without acquire load.
   if (object.IsHeapObject() && HeapObject::cast(object).map(isolate) ==
@@ -737,20 +730,20 @@ void Map::SetBackPointer(HeapObject value, WriteBarrierMode mode) {
   CHECK(value.IsMap());
   CHECK(GetBackPointer().IsUndefined());
   CHECK_IMPLIES(value.IsMap(), Map::cast(value).GetConstructor() ==
-                                   constructor_or_backpointer());
-  set_constructor_or_backpointer(value, mode);
+                                   constructor_or_back_pointer());
+  set_constructor_or_back_pointer(value, mode);
 }
 
 // static
 Map Map::ElementsTransitionMap(Isolate* isolate) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   return TransitionsAccessor(isolate, *this, &no_gc)
       .SearchSpecial(ReadOnlyRoots(isolate).elements_transition_symbol());
 }
 
 ACCESSORS(Map, dependent_code, DependentCode, kDependentCodeOffset)
 ACCESSORS(Map, prototype_validity_cell, Object, kPrototypeValidityCellOffset)
-ACCESSORS_CHECKED2(Map, constructor_or_backpointer, Object,
+ACCESSORS_CHECKED2(Map, constructor_or_back_pointer, Object,
                    kConstructorOrBackPointerOrNativeContextOffset,
                    !IsContextMap(), value.IsNull() || !IsContextMap())
 ACCESSORS_CHECKED(Map, native_context, NativeContext,
@@ -768,22 +761,22 @@ bool Map::IsPrototypeValidityCellValid() const {
 }
 
 DEF_GETTER(Map, GetConstructor, Object) {
-  Object maybe_constructor = constructor_or_backpointer(isolate);
+  Object maybe_constructor = constructor_or_back_pointer(isolate);
   // Follow any back pointers.
   while (maybe_constructor.IsMap(isolate)) {
     maybe_constructor =
-        Map::cast(maybe_constructor).constructor_or_backpointer(isolate);
+        Map::cast(maybe_constructor).constructor_or_back_pointer(isolate);
   }
   return maybe_constructor;
 }
 
 Object Map::TryGetConstructor(Isolate* isolate, int max_steps) {
-  Object maybe_constructor = constructor_or_backpointer(isolate);
+  Object maybe_constructor = constructor_or_back_pointer(isolate);
   // Follow any back pointers.
   while (maybe_constructor.IsMap(isolate)) {
     if (max_steps-- == 0) return Smi::FromInt(0);
     maybe_constructor =
-        Map::cast(maybe_constructor).constructor_or_backpointer(isolate);
+        Map::cast(maybe_constructor).constructor_or_back_pointer(isolate);
   }
   return maybe_constructor;
 }
@@ -801,8 +794,8 @@ DEF_GETTER(Map, GetFunctionTemplateInfo, FunctionTemplateInfo) {
 
 void Map::SetConstructor(Object constructor, WriteBarrierMode mode) {
   // Never overwrite a back pointer with a constructor.
-  CHECK(!constructor_or_backpointer().IsMap());
-  set_constructor_or_backpointer(constructor, mode);
+  CHECK(!constructor_or_back_pointer().IsMap());
+  set_constructor_or_back_pointer(constructor, mode);
 }
 
 Handle<Map> Map::CopyInitialMap(Isolate* isolate, Handle<Map> map) {

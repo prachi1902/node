@@ -23,7 +23,13 @@ void CallInterfaceDescriptorData::InitializePlatformSpecific(
   for (int i = 0; i < register_parameter_count; i++) {
     // The value of the root register must be reserved, thus any uses
     // within the calling convention are disallowed.
-    DCHECK_NE(registers[i], kRootRegister);
+#ifdef DEBUG
+    CHECK_NE(registers[i], kRootRegister);
+    // Check for duplicated registers.
+    for (int j = i + 1; j < register_parameter_count; j++) {
+      CHECK_NE(registers[i], registers[j]);
+    }
+#endif
     register_params_[i] = registers[i];
   }
 }
@@ -293,7 +299,7 @@ void TypeConversionNoContextDescriptor::InitializePlatformSpecific(
   data->InitializePlatformSpecific(arraysize(registers), registers);
 }
 
-void TypeConversionStackParameterDescriptor::InitializePlatformSpecific(
+void SingleParameterOnStackDescriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   data->InitializePlatformSpecific(0, nullptr);
 }
@@ -397,7 +403,8 @@ void WasmFloat64ToNumberDescriptor::InitializePlatformSpecific(
 }
 #endif  // !V8_TARGET_ARCH_IA32
 
-#if !defined(V8_TARGET_ARCH_MIPS) && !defined(V8_TARGET_ARCH_MIPS64)
+#if !defined(V8_TARGET_ARCH_MIPS) && !defined(V8_TARGET_ARCH_MIPS64) && \
+    !defined(V8_TARGET_ARCH_RISCV64)
 void WasmI32AtomicWait32Descriptor::InitializePlatformSpecific(
     CallInterfaceDescriptorData* data) {
   DefaultInitializePlatformSpecific(data, kParameterCount);

@@ -100,6 +100,10 @@ Handle<FeedbackCell> ClosureFeedbackCellArray::GetFeedbackCell(int index) {
   return handle(FeedbackCell::cast(get(index)), GetIsolate());
 }
 
+FeedbackCell ClosureFeedbackCellArray::cell(int index) {
+  return FeedbackCell::cast(get(index));
+}
+
 bool FeedbackVector::is_empty() const { return length() == 0; }
 
 FeedbackMetadata FeedbackVector::metadata() const {
@@ -124,6 +128,16 @@ Code FeedbackVector::optimized_code() const {
 
 OptimizationMarker FeedbackVector::optimization_marker() const {
   return OptimizationMarkerBits::decode(flags());
+}
+
+int FeedbackVector::global_ticks_at_last_runtime_profiler_interrupt() const {
+  return GlobalTicksAtLastRuntimeProfilerInterruptBits::decode(flags());
+}
+
+void FeedbackVector::set_global_ticks_at_last_runtime_profiler_interrupt(
+    int ticks) {
+  set_flags(
+      GlobalTicksAtLastRuntimeProfilerInterruptBits::update(flags(), ticks));
 }
 
 OptimizationTier FeedbackVector::optimization_tier() const {
@@ -178,9 +192,12 @@ MaybeObject FeedbackVector::Get(IsolateRoot isolate, FeedbackSlot slot) const {
 
 Handle<FeedbackCell> FeedbackVector::GetClosureFeedbackCell(int index) const {
   DCHECK_GE(index, 0);
-  ClosureFeedbackCellArray cell_array =
-      ClosureFeedbackCellArray::cast(closure_feedback_cell_array());
-  return cell_array.GetFeedbackCell(index);
+  return closure_feedback_cell_array().GetFeedbackCell(index);
+}
+
+FeedbackCell FeedbackVector::closure_feedback_cell(int index) const {
+  DCHECK_GE(index, 0);
+  return closure_feedback_cell_array().cell(index);
 }
 
 MaybeObject FeedbackVector::SynchronizedGet(FeedbackSlot slot) const {

@@ -4,6 +4,7 @@
 
 #include "include/cppgc/internal/write-barrier.h"
 
+#include "include/cppgc/heap-consistency.h"
 #include "include/cppgc/internal/pointer-policies.h"
 #include "src/heap/cppgc/globals.h"
 #include "src/heap/cppgc/heap-object-header.h"
@@ -21,17 +22,15 @@ namespace internal {
 
 namespace {
 
-void MarkValue(const BasePage* page, MarkerBase* marker, const void* value) {
+void ProcessMarkValue(HeapObjectHeader& header, MarkerBase* marker,
+                      const void* value) {
 #if defined(CPPGC_CAGED_HEAP)
   DCHECK(reinterpret_cast<CagedHeapLocalData*>(
              reinterpret_cast<uintptr_t>(value) &
              ~(kCagedHeapReservationAlignment - 1))
-             ->is_marking_in_progress);
+             ->is_incremental_marking_in_progress);
 #endif
-  auto& header =
-      const_cast<HeapObjectHeader&>(page->ObjectHeaderFromInnerAddress(value));
-  if (!header.TryMarkAtomic()) return;
-
+  DCHECK(header.IsMarked<AccessMode::kAtomic>());
   DCHECK(marker);
 
   if (V8_UNLIKELY(header.IsInConstruction<AccessMode::kNonAtomic>())) {
@@ -49,33 +48,135 @@ void MarkValue(const BasePage* page, MarkerBase* marker, const void* value) {
 
 }  // namespace
 
-void WriteBarrier::MarkingBarrierSlowWithSentinelCheck(const void* value) {
+// static
+void WriteBarrier::DijkstraMarkingBarrierSlowWithSentinelCheck(
+    const void* value) {
   if (!value || value == kSentinelPointer) return;
 
-  MarkingBarrierSlow(value);
+  DijkstraMarkingBarrierSlow(value);
 }
 
-void WriteBarrier::MarkingBarrierSlow(const void* value) {
+// static
+void WriteBarrier::DijkstraMarkingBarrierSlow(const void* value) {
   const BasePage* page = BasePage::FromPayload(value);
   const auto* heap = page->heap();
 
-  // Marker being not set up means that no incremental/concurrent marking is in
-  // progress.
-  if (!heap->marker()) return;
+  // GetWriteBarrierType() checks marking state.
+  DCHECK(heap->marker());
+  // No write barriers should be executed from atomic pause marking.
+  DCHECK(!heap->in_atomic_pause());
 
-  MarkValue(page, heap->marker(), value);
+  auto& header =
+      const_cast<HeapObjectHeader&>(page->ObjectHeaderFromInnerAddress(value));
+  if (!header.TryMarkAtomic()) return;
+
+  ProcessMarkValue(header, heap->marker(), value);
+}
+
+// static
+void WriteBarrier::DijkstraMarkingBarrierRangeSlow(
+    HeapHandle& heap_handle, const void* first_element, size_t element_size,
+    size_t number_of_elements, TraceCallback trace_callback) {
+  auto& heap_base = HeapBase::From(heap_handle);
+
+  // GetWriteBarrierType() checks marking state.
+  DCHECK(heap_base.marker());
+  // No write barriers should be executed from atomic pause marking.
+  DCHECK(!heap_base.in_atomic_pause());
+
+  cppgc::subtle::DisallowGarbageCollectionScope disallow_gc_scope(heap_base);
+  const char* array = static_cast<const char*>(first_element);
+  while (number_of_elements-- > 0) {
+    trace_callback(&heap_base.marker()->Visitor(), array);
+    array += element_size;
+  }
+}
+
+// static
+void WriteBarrier::SteeleMarkingBarrierSlowWithSentinelCheck(
+    const void* value) {
+  if (!value || value == kSentinelPointer) return;
+
+  SteeleMarkingBarrierSlow(value);
+}
+
+// static
+void WriteBarrier::SteeleMarkingBarrierSlow(const void* value) {
+  const BasePage* page = BasePage::FromPayload(value);
+  const auto* heap = page->heap();
+
+  // GetWriteBarrierType() checks marking state.
+  DCHECK(heap->marker());
+  // No write barriers should be executed from atomic pause marking.
+  DCHECK(!heap->in_atomic_pause());
+
+  auto& header =
+      const_cast<HeapObjectHeader&>(page->ObjectHeaderFromInnerAddress(value));
+  if (!header.IsMarked<AccessMode::kAtomic>()) return;
+
+  ProcessMarkValue(header, heap->marker(), value);
 }
 
 #if defined(CPPGC_YOUNG_GENERATION)
-void WriteBarrier::GenerationalBarrierSlow(CagedHeapLocalData* local_data,
+// static
+void WriteBarrier::GenerationalBarrierSlow(const CagedHeapLocalData& local_data,
                                            const AgeTable& age_table,
                                            const void* slot,
                                            uintptr_t value_offset) {
-  if (age_table[value_offset] == AgeTable::Age::kOld) return;
+  // A write during atomic pause (e.g. pre-finalizer) may trigger the slow path
+  // of the barrier. This is a result of the order of bailouts where not marking
+  // results in applying the generational barrier.
+  if (local_data.heap_base->in_atomic_pause()) return;
+
+  if (value_offset > 0 && age_table[value_offset] == AgeTable::Age::kOld)
+    return;
   // Record slot.
-  local_data->heap_base->remembered_slots().insert(const_cast<void*>(slot));
+  local_data.heap_base->remembered_slots().insert(const_cast<void*>(slot));
 }
-#endif
+#endif  // CPPGC_YOUNG_GENERATION
+
+#if V8_ENABLE_CHECKS
+// static
+void WriteBarrier::CheckParams(Type expected_type, const Params& params) {
+  CHECK_EQ(expected_type, params.type);
+}
+#endif  // V8_ENABLE_CHECKS
+
+// static
+bool WriteBarrierTypeForNonCagedHeapPolicy::IsMarking(const void* object,
+                                                      HeapHandle** handle) {
+  // Large objects cannot have mixins, so we are guaranteed to always have
+  // a pointer on the same page.
+  const auto* page = BasePage::FromPayload(object);
+  *handle = page->heap();
+  return page->heap()->marker();
+}
+
+// static
+bool WriteBarrierTypeForNonCagedHeapPolicy::IsMarking(HeapHandle& heap_handle) {
+  const auto& heap_base = internal::HeapBase::From(heap_handle);
+  return heap_base.marker();
+}
+
+#if defined(CPPGC_CAGED_HEAP)
+
+// static
+bool WriteBarrierTypeForCagedHeapPolicy::IsMarking(
+    const HeapHandle& heap_handle, WriteBarrier::Params& params) {
+  const auto& heap_base = internal::HeapBase::From(heap_handle);
+  if (heap_base.marker()) {
+    return true;
+  }
+  // Also set caged heap start here to avoid another call immediately after
+  // checking IsMarking().
+#if defined(CPPGC_YOUNG_GENERATION)
+  params.start =
+      reinterpret_cast<uintptr_t>(&heap_base.caged_heap().local_data());
+#endif  // !CPPGC_YOUNG_GENERATION
+  return false;
+}
+
+#endif  // CPPGC_CAGED_HEAP
 
 }  // namespace internal
 }  // namespace cppgc

@@ -868,6 +868,11 @@ TNode<Object> AccessorAssembler::HandleProtoHandler(
 
       BIND(&if_lookup_on_lookup_start_object);
       {
+        if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+          // TODO(v8:11167) remove once OrderedNameDictionary supported.
+          GotoIf(Int32TrueConstant(), miss);
+        }
+
         // Dictionary lookup on lookup start object is not necessary for
         // Load/StoreGlobalIC (which is the only case when the
         // lookup_start_object can be a JSGlobalObject) because prototype
@@ -936,6 +941,8 @@ void AccessorAssembler::HandleLoadICProtoHandler(
 
   BIND(&is_smi);
   {
+    // If the "maybe_holder_or_constant" in the handler is a smi, then it's
+    // guaranteed that it's not a holder object, but a constant value.
     CSA_ASSERT(
         this,
         WordEqual(
@@ -1061,6 +1068,7 @@ void AccessorAssembler::HandleStoreICHandlerCase(
         properties, CAST(p->name()), &dictionary_found, &var_name_index, miss);
     BIND(&dictionary_found);
     {
+      Label if_constant(this), done(this);
       TNode<Uint32T> details =
           LoadDetailsByKeyIndex(properties, var_name_index.value());
       // Check that the property is a writable data property (no accessor).
@@ -1069,9 +1077,26 @@ void AccessorAssembler::HandleStoreICHandlerCase(
       STATIC_ASSERT(kData == 0);
       GotoIf(IsSetWord32(details, kTypeAndReadOnlyMask), miss);
 
+      if (V8_DICT_PROPERTY_CONST_TRACKING_BOOL) {
+        GotoIf(IsPropertyDetailsConst(details), &if_constant);
+      }
+
       StoreValueByKeyIndex<NameDictionary>(properties, var_name_index.value(),
                                            p->value());
       Return(p->value());
+
+      if (V8_DICT_PROPERTY_CONST_TRACKING_BOOL) {
+        BIND(&if_constant);
+        {
+          TNode<Object> prev_value =
+              LoadValueByKeyIndex(properties, var_name_index.value());
+          BranchIfSameValue(prev_value, p->value(), &done, miss,
+                            SameValueMode::kNumbersOnly);
+        }
+
+        BIND(&done);
+        Return(p->value());
+      }
     }
 
     BIND(&if_fast_smi);
@@ -1292,8 +1317,9 @@ void AccessorAssembler::CheckFieldType(TNode<DescriptorArray> descriptors,
 }
 
 TNode<BoolT> AccessorAssembler::IsPropertyDetailsConst(TNode<Uint32T> details) {
-  return Word32Equal(DecodeWord32<PropertyDetails::ConstnessField>(details),
-                     Int32Constant(static_cast<int32_t>(VariableMode::kConst)));
+  return Word32Equal(
+      DecodeWord32<PropertyDetails::ConstnessField>(details),
+      Int32Constant(static_cast<int32_t>(PropertyConstness::kConst)));
 }
 
 void AccessorAssembler::OverwriteExistingFastDataProperty(
@@ -2444,6 +2470,11 @@ void AccessorAssembler::GenericPropertyLoad(
 
   BIND(&if_property_dictionary);
   {
+    if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+      // TODO(v8:11167) remove once OrderedNameDictionary supported.
+      GotoIf(Int32TrueConstant(), slow);
+    }
+
     Comment("dictionary property load");
     // We checked for LAST_CUSTOM_ELEMENTS_RECEIVER before, which rules out
     // seeing global objects here (which would need special handling).
@@ -2554,9 +2585,9 @@ enum AccessorAssembler::StubCacheTable : int {
 TNode<IntPtrT> AccessorAssembler::StubCachePrimaryOffset(TNode<Name> name,
                                                          TNode<Map> map) {
   // Compute the hash of the name (use entire hash field).
-  TNode<Uint32T> hash_field = LoadNameHashField(name);
+  TNode<Uint32T> raw_hash_field = LoadNameRawHashField(name);
   CSA_ASSERT(this,
-             Word32Equal(Word32And(hash_field,
+             Word32Equal(Word32And(raw_hash_field,
                                    Int32Constant(Name::kHashNotComputedMask)),
                          Int32Constant(0)));
 
@@ -2568,7 +2599,7 @@ TNode<IntPtrT> AccessorAssembler::StubCachePrimaryOffset(TNode<Name> name,
   TNode<Int32T> map32 = TruncateIntPtrToInt32(UncheckedCast<IntPtrT>(
       WordXor(map_word, WordShr(map_word, StubCache::kMapKeyShift))));
   // Base the offset on a simple combination of name and map.
-  TNode<Word32T> hash = Int32Add(hash_field, map32);
+  TNode<Word32T> hash = Int32Add(raw_hash_field, map32);
   uint32_t mask = (StubCache::kPrimaryTableSize - 1)
                   << StubCache::kCacheIndexShift;
   TNode<UintPtrT> result =
@@ -2880,8 +2911,7 @@ void AccessorAssembler::LoadIC_NoFeedback(const LoadICParameters* p,
     // Special case for Function.prototype load, because it's very common
     // for ICs that are only executed once (MyFunc.prototype.foo = ...).
     Label not_function_prototype(this, Label::kDeferred);
-    GotoIfNot(InstanceTypeEqual(instance_type, JS_FUNCTION_TYPE),
-              &not_function_prototype);
+    GotoIfNot(IsJSFunctionInstanceType(instance_type), &not_function_prototype);
     GotoIfNot(IsPrototypeString(p->name()), &not_function_prototype);
 
     GotoIfPrototypeRequiresRuntimeLookup(CAST(lookup_start_object),
@@ -3058,13 +3088,11 @@ void AccessorAssembler::ScriptContextTableLookup(
         ScriptContextTable::kFirstContextSlotIndex * kTaggedSize));
     TNode<ScopeInfo> scope_info =
         CAST(LoadContextElement(script_context, Context::SCOPE_INFO_INDEX));
-    TNode<IntPtrT> length = LoadAndUntagFixedArrayBaseLength(scope_info);
-    GotoIf(IntPtrLessThanOrEqual(length, IntPtrConstant(0)), &loop);
 
     TVARIABLE(IntPtrT, scope_var_index,
               IntPtrConstant(ScopeInfo::kVariablePartIndex - 1));
-    TNode<IntPtrT> num_scope_vars = SmiUntag(CAST(LoadFixedArrayElement(
-        scope_info, IntPtrConstant(ScopeInfo::Fields::kContextLocalCount))));
+    TNode<IntPtrT> num_scope_vars = SmiUntag(
+        CAST(LoadObjectField(scope_info, ScopeInfo::kContextLocalCountOffset)));
     TNode<IntPtrT> end_index = IntPtrAdd(
         num_scope_vars, IntPtrConstant(ScopeInfo::kVariablePartIndex));
     Label loop_scope_info(this, &scope_var_index);
@@ -3076,8 +3104,9 @@ void AccessorAssembler::ScriptContextTableLookup(
       GotoIf(IntPtrGreaterThanOrEqual(scope_var_index.value(), end_index),
              &loop);
 
-      TNode<Object> var_name =
-          LoadFixedArrayElement(scope_info, scope_var_index.value(), 0);
+      FixedArrayBoundsCheck(scope_info, scope_var_index.value(), 0);
+      TNode<Object> var_name = CAST(LoadArrayElement(
+          scope_info, FixedArray::kHeaderSize, scope_var_index.value()));
       GotoIf(TaggedNotEqual(var_name, name), &loop_scope_info);
 
       TNode<IntPtrT> var_index =

@@ -25,7 +25,6 @@ namespace internal {
   V(Allocate)                            \
   V(ApiCallback)                         \
   V(ApiGetter)                           \
-  V(ArgumentsAdaptor)                    \
   V(ArrayConstructor)                    \
   V(ArrayNArgumentsConstructor)          \
   V(ArrayNoArgumentConstructor)          \
@@ -58,6 +57,7 @@ namespace internal {
   V(ConstructWithSpread_WithFeedback)    \
   V(ContextOnly)                         \
   V(CppBuiltinAdaptor)                   \
+  V(DynamicCheckMaps)                    \
   V(EphemeronKeyBarrier)                 \
   V(FastNewObject)                       \
   V(FrameDropperTrampoline)              \
@@ -84,6 +84,7 @@ namespace internal {
   V(ResumeGenerator)                     \
   V(RunMicrotasks)                       \
   V(RunMicrotasksEntry)                  \
+  V(SingleParameterOnStack)              \
   V(Store)                               \
   V(StoreGlobal)                         \
   V(StoreGlobalWithVector)               \
@@ -94,7 +95,6 @@ namespace internal {
   V(StringSubstring)                     \
   V(TypeConversion)                      \
   V(TypeConversionNoContext)             \
-  V(TypeConversionStackParameter)        \
   V(Typeof)                              \
   V(UnaryOp_WithFeedback)                \
   V(Void)                                \
@@ -131,6 +131,10 @@ class V8_EXPORT_PRIVATE CallInterfaceDescriptorData {
   using Flags = base::Flags<Flag>;
 
   CallInterfaceDescriptorData() = default;
+
+  CallInterfaceDescriptorData(const CallInterfaceDescriptorData&) = delete;
+  CallInterfaceDescriptorData& operator=(const CallInterfaceDescriptorData&) =
+      delete;
 
   // A copy of the passed in registers and param_representations is made
   // and owned by the CallInterfaceDescriptorData.
@@ -222,8 +226,6 @@ class V8_EXPORT_PRIVATE CallInterfaceDescriptorData {
   // runtime static initializers which we don't want.
   Register* register_params_ = nullptr;
   MachineType* machine_types_ = nullptr;
-
-  DISALLOW_COPY_AND_ASSIGN(CallInterfaceDescriptorData);
 };
 
 class V8_EXPORT_PRIVATE CallDescriptors : public AllStatic {
@@ -293,6 +295,7 @@ class V8_EXPORT_PRIVATE CallInterfaceDescriptor {
   }
 
   Register GetRegisterParameter(int index) const {
+    DCHECK_LT(index, data()->register_param_count());
     return data()->register_param(index);
   }
 
@@ -544,7 +547,7 @@ class V8_EXPORT_PRIVATE VoidDescriptor : public CallInterfaceDescriptor {
 };
 
 // This class is subclassed by Torque-generated call interface descriptors.
-template <int parameter_count, bool has_context_parameter>
+template <int return_count, int parameter_count, bool has_context_parameter>
 class TorqueInterfaceDescriptor : public CallInterfaceDescriptor {
  public:
   static constexpr int kDescriptorFlags =
@@ -557,7 +560,7 @@ class TorqueInterfaceDescriptor : public CallInterfaceDescriptor {
     STATIC_ASSERT(0 <= i && i < kParameterCount);
     return static_cast<ParameterIndices>(i);
   }
-  static constexpr int kReturnCount = 1;
+  static constexpr int kReturnCount = return_count;
 
   using CallInterfaceDescriptor::CallInterfaceDescriptor;
 
@@ -567,14 +570,15 @@ class TorqueInterfaceDescriptor : public CallInterfaceDescriptor {
           ? kMaxTFSBuiltinRegisterParams
           : kParameterCount;
   static const int kStackParams = kParameterCount - kRegisterParams;
-  virtual MachineType ReturnType() = 0;
+  virtual std::vector<MachineType> ReturnType() = 0;
   virtual std::array<MachineType, kParameterCount> ParameterTypes() = 0;
   void InitializePlatformSpecific(CallInterfaceDescriptorData* data) override {
     DefaultInitializePlatformSpecific(data, kRegisterParams);
   }
   void InitializePlatformIndependent(
       CallInterfaceDescriptorData* data) override {
-    std::vector<MachineType> machine_types = {ReturnType()};
+    std::vector<MachineType> machine_types = ReturnType();
+    DCHECK_EQ(kReturnCount, machine_types.size());
     auto parameter_types = ParameterTypes();
     machine_types.insert(machine_types.end(), parameter_types.begin(),
                          parameter_types.end());
@@ -873,6 +877,17 @@ class LoadGlobalWithVectorDescriptor : public LoadGlobalDescriptor {
 #endif
 };
 
+class DynamicCheckMapsDescriptor final : public CallInterfaceDescriptor {
+ public:
+  DEFINE_PARAMETERS(kMap, kSlot, kHandler)
+  DEFINE_RESULT_AND_PARAMETER_TYPES(MachineType::Int32(),          // return val
+                                    MachineType::TaggedPointer(),  // kMap
+                                    MachineType::IntPtr(),         // kSlot
+                                    MachineType::TaggedSigned())   // kHandler
+
+  DECLARE_DESCRIPTOR(DynamicCheckMapsDescriptor, CallInterfaceDescriptor)
+};
+
 class FastNewObjectDescriptor : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kTarget, kNewTarget)
@@ -920,13 +935,11 @@ class TypeConversionNoContextDescriptor final : public CallInterfaceDescriptor {
   DECLARE_DESCRIPTOR(TypeConversionNoContextDescriptor, CallInterfaceDescriptor)
 };
 
-class TypeConversionStackParameterDescriptor final
-    : public CallInterfaceDescriptor {
+class SingleParameterOnStackDescriptor final : public CallInterfaceDescriptor {
  public:
   DEFINE_PARAMETERS(kArgument)
   DEFINE_PARAMETER_TYPES(MachineType::AnyTagged())
-  DECLARE_DESCRIPTOR(TypeConversionStackParameterDescriptor,
-                     CallInterfaceDescriptor)
+  DECLARE_DESCRIPTOR(SingleParameterOnStackDescriptor, CallInterfaceDescriptor)
 };
 
 class AsyncFunctionStackParameterDescriptor final
@@ -1221,13 +1234,6 @@ class StringSubstringDescriptor final : public CallInterfaceDescriptor {
 
   // TODO(turbofan): Allow builtins to return untagged values.
   DECLARE_DESCRIPTOR(StringSubstringDescriptor, CallInterfaceDescriptor)
-};
-
-class ArgumentsAdaptorDescriptor : public CallInterfaceDescriptor {
- public:
-  DEFINE_JS_PARAMETERS(kExpectedArgumentsCount)
-  DEFINE_JS_PARAMETER_TYPES(MachineType::Int32())
-  DECLARE_DESCRIPTOR(ArgumentsAdaptorDescriptor, CallInterfaceDescriptor)
 };
 
 class CppBuiltinAdaptorDescriptor : public CallInterfaceDescriptor {

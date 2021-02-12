@@ -13,6 +13,7 @@
 #include "src/codegen/code-stub-assembler.h"
 #include "src/codegen/interface-descriptors.h"
 #include "src/codegen/macro-assembler.h"
+#include "src/common/globals.h"
 #include "src/logging/counters.h"
 #include "src/objects/objects-inl.h"
 
@@ -281,7 +282,12 @@ TNode<JSObject> ConstructorBuiltinsAssembler::FastNewObject(
   }
   BIND(&allocate_properties);
   {
-    properties = AllocateNameDictionary(NameDictionary::kInitialCapacity);
+    if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+      properties = AllocateOrderedNameDictionary(
+          OrderedNameDictionary::kInitialCapacity);
+    } else {
+      properties = AllocateNameDictionary(NameDictionary::kInitialCapacity);
+    }
     Goto(&instantiate_map);
   }
 
@@ -352,15 +358,49 @@ TNode<JSRegExp> ConstructorBuiltinsAssembler::CreateRegExpLiteral(
       CAST(LoadFeedbackVectorSlot(feedback_vector, slot));
   GotoIfNot(HasBoilerplate(literal_site), &call_runtime);
   {
-    TNode<JSRegExp> boilerplate = CAST(literal_site);
-    int size =
-        JSRegExp::kHeaderSize + JSRegExp::kInObjectFieldCount * kTaggedSize;
-    TNode<HeapObject> copy = Allocate(size);
-    for (int offset = 0; offset < size; offset += kTaggedSize) {
-      TNode<Object> value = LoadObjectField(boilerplate, offset);
-      StoreObjectFieldNoWriteBarrier(copy, offset, value);
-    }
-    result = CAST(copy);
+    STATIC_ASSERT(JSRegExp::kDataOffset == JSObject::kHeaderSize);
+    STATIC_ASSERT(JSRegExp::kSourceOffset ==
+                  JSRegExp::kDataOffset + kTaggedSize);
+    STATIC_ASSERT(JSRegExp::kFlagsOffset ==
+                  JSRegExp::kSourceOffset + kTaggedSize);
+    STATIC_ASSERT(JSRegExp::kHeaderSize ==
+                  JSRegExp::kFlagsOffset + kTaggedSize);
+    STATIC_ASSERT(JSRegExp::kLastIndexOffset == JSRegExp::kHeaderSize);
+    DCHECK_EQ(JSRegExp::Size(), JSRegExp::kLastIndexOffset + kTaggedSize);
+
+    TNode<RegExpBoilerplateDescription> boilerplate = CAST(literal_site);
+    TNode<HeapObject> new_object = Allocate(JSRegExp::Size());
+
+    // Initialize Object fields.
+    TNode<JSFunction> regexp_function = CAST(LoadContextElement(
+        LoadNativeContext(context), Context::REGEXP_FUNCTION_INDEX));
+    TNode<Map> initial_map = CAST(LoadObjectField(
+        regexp_function, JSFunction::kPrototypeOrInitialMapOffset));
+    StoreMapNoWriteBarrier(new_object, initial_map);
+    // Initialize JSReceiver fields.
+    StoreObjectFieldRoot(new_object, JSReceiver::kPropertiesOrHashOffset,
+                         RootIndex::kEmptyFixedArray);
+    // Initialize JSObject fields.
+    StoreObjectFieldRoot(new_object, JSObject::kElementsOffset,
+                         RootIndex::kEmptyFixedArray);
+    // Initialize JSRegExp fields.
+    StoreObjectFieldNoWriteBarrier(
+        new_object, JSRegExp::kDataOffset,
+        LoadObjectField(boilerplate,
+                        RegExpBoilerplateDescription::kDataOffset));
+    StoreObjectFieldNoWriteBarrier(
+        new_object, JSRegExp::kSourceOffset,
+        LoadObjectField(boilerplate,
+                        RegExpBoilerplateDescription::kSourceOffset));
+    StoreObjectFieldNoWriteBarrier(
+        new_object, JSRegExp::kFlagsOffset,
+        LoadObjectField(boilerplate,
+                        RegExpBoilerplateDescription::kFlagsOffset));
+    StoreObjectFieldNoWriteBarrier(
+        new_object, JSRegExp::kLastIndexOffset,
+        SmiConstant(JSRegExp::kInitialLastIndexValue));
+
+    result = CAST(new_object);
     Goto(&end);
   }
 
@@ -462,6 +502,11 @@ TNode<HeapObject> ConstructorBuiltinsAssembler::CreateShallowObjectLiteral(
            &if_dictionary, &if_fast);
     BIND(&if_dictionary);
     {
+      if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+        // TODO(v8:11167) remove once OrderedNameDictionary supported.
+        GotoIf(Int32TrueConstant(), call_runtime);
+      }
+
       Comment("Copy dictionary properties");
       var_properties = CopyNameDictionary(CAST(LoadSlowProperties(boilerplate)),
                                           call_runtime);

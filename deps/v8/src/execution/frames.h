@@ -18,7 +18,6 @@
 //     - JavaScriptFrame (aka StandardFrame)
 //       - InterpretedFrame
 //       - OptimizedFrame
-//       - ArgumentsAdaptorFrame (technically a TypedFrame)
 //     - TypedFrameWithJSLinkage
 //       - BuiltinFrame
 //       - JavaScriptBuiltinContinuationFrame
@@ -110,7 +109,6 @@ class StackHandler {
     JavaScriptBuiltinContinuationWithCatchFrame)                          \
   V(INTERNAL, InternalFrame)                                              \
   V(CONSTRUCT, ConstructFrame)                                            \
-  V(ARGUMENTS_ADAPTOR, ArgumentsAdaptorFrame)                             \
   V(BUILTIN, BuiltinFrame)                                                \
   V(BUILTIN_EXIT, BuiltinExitFrame)                                       \
   V(NATIVE, NativeFrame)
@@ -212,7 +210,6 @@ class StackFrame {
   bool is_wasm() const { return this->type() == WASM; }
   bool is_wasm_compile_lazy() const { return type() == WASM_COMPILE_LAZY; }
   bool is_wasm_debug_break() const { return type() == WASM_DEBUG_BREAK; }
-  bool is_arguments_adaptor() const { return type() == ARGUMENTS_ADAPTOR; }
   bool is_builtin() const { return type() == BUILTIN; }
   bool is_internal() const { return type() == INTERNAL; }
   bool is_builtin_continuation() const {
@@ -509,10 +506,6 @@ class CommonFrame : public StackFrame {
   // Returns the address of the n'th expression stack element.
   virtual Address GetExpressionAddress(int n) const;
 
-  // Determines if the standard frame for the given frame pointer is
-  // an arguments adaptor frame.
-  static inline bool IsArgumentsAdaptorFrame(Address fp);
-
   // Used by OptimizedFrames and StubFrames.
   void IterateCompiledFrame(RootVisitor* v) const;
 
@@ -523,7 +516,7 @@ class CommonFrame : public StackFrame {
 
 class TypedFrame : public CommonFrame {
  public:
-  Code unchecked_code() const override { return Code(); }
+  Code unchecked_code() const override { return {}; }
   void Iterate(RootVisitor* v) const override { IterateCompiledFrame(v); }
 
  protected:
@@ -540,9 +533,7 @@ class CommonFrameWithJSLinkage : public CommonFrame {
   virtual Object GetParameter(int index) const;
   virtual int ComputeParametersCount() const;
   Handle<FixedArray> GetParameters() const;
-#ifdef V8_NO_ARGUMENTS_ADAPTOR
   virtual int GetActualArgumentCount() const;
-#endif
 
   // Determine the code for the frame.
   Code unchecked_code() const override;
@@ -586,10 +577,7 @@ class JavaScriptFrame : public CommonFrameWithJSLinkage {
   Object unchecked_function() const;
   Script script() const;
   Object context() const override;
-
-#ifdef V8_NO_ARGUMENTS_ADAPTOR
   int GetActualArgumentCount() const override;
-#endif
 
   inline void set_receiver(Object value);
 
@@ -602,11 +590,6 @@ class JavaScriptFrame : public CommonFrameWithJSLinkage {
   // Determines whether this frame includes inlined activations. To get details
   // about the inlined frames use {GetFunctions} and {Summarize}.
   bool HasInlinedFrames() const;
-
-  // Check if this frame has "adapted" arguments in the sense that the
-  // actual passed arguments are available in an arguments adaptor
-  // frame below it on the stack.
-  inline bool has_adapted_arguments() const;
 
   // Garbage collection support.
   void Iterate(RootVisitor* v) const override;
@@ -882,38 +865,6 @@ class InterpretedFrame : public JavaScriptFrame {
   friend class StackFrameIteratorBase;
 };
 
-// Arguments adaptor frames are automatically inserted below
-// JavaScript frames when the actual number of parameters does not
-// match the formal number of parameters.
-// NOTE: this inheritance is wrong, an ArgumentsAdaptorFrame should be
-// of type TypedFrame, but due to FrameInspector::javascript_frame(),
-// it needs to be seen as JavaScriptFrame.
-// This frame will however be deleted soon.
-class ArgumentsAdaptorFrame : public JavaScriptFrame {
- public:
-  Type type() const override { return ARGUMENTS_ADAPTOR; }
-
-  // Determine the code for the frame.
-  Code unchecked_code() const override;
-
-  static ArgumentsAdaptorFrame* cast(StackFrame* frame) {
-    DCHECK(frame->is_arguments_adaptor());
-    return static_cast<ArgumentsAdaptorFrame*>(frame);
-  }
-
-  int ComputeParametersCount() const override;
-
-  // Printing support.
-  void Print(StringStream* accumulator, PrintMode mode,
-             int index) const override;
-
- protected:
-  inline explicit ArgumentsAdaptorFrame(StackFrameIteratorBase* iterator);
-
- private:
-  friend class StackFrameIteratorBase;
-};
-
 // Builtin frames are built for builtins with JavaScript linkage, such as
 // various standard library functions (i.e. Math.asin, Math.floor, etc.).
 class BuiltinFrame final : public TypedFrameWithJSLinkage {
@@ -945,9 +896,6 @@ class WasmFrame : public TypedFrame {
 
   // Lookup exception handler for current {pc}, returns -1 if none found.
   int LookupExceptionHandlerInTable();
-
-  // Determine the code for the frame.
-  Code unchecked_code() const override;
 
   // Accessors.
   V8_EXPORT_PRIVATE WasmInstanceObject wasm_instance() const;
@@ -1077,9 +1025,6 @@ class InternalFrame : public TypedFrame {
   // Garbage collection support.
   void Iterate(RootVisitor* v) const override;
 
-  // Determine the code for the frame.
-  Code unchecked_code() const override;
-
   static InternalFrame* cast(StackFrame* frame) {
     DCHECK(frame->is_internal());
     return static_cast<InternalFrame*>(frame);
@@ -1175,6 +1120,9 @@ class JavaScriptBuiltinContinuationWithCatchFrame
 
 class StackFrameIteratorBase {
  public:
+  StackFrameIteratorBase(const StackFrameIteratorBase&) = delete;
+  StackFrameIteratorBase& operator=(const StackFrameIteratorBase&) = delete;
+
   Isolate* isolate() const { return isolate_; }
 
   bool done() const { return frame_ == nullptr; }
@@ -1203,7 +1151,6 @@ class StackFrameIteratorBase {
 
  private:
   friend class StackFrame;
-  DISALLOW_COPY_AND_ASSIGN(StackFrameIteratorBase);
 };
 
 class StackFrameIterator : public StackFrameIteratorBase {
@@ -1212,6 +1159,9 @@ class StackFrameIterator : public StackFrameIteratorBase {
   V8_EXPORT_PRIVATE explicit StackFrameIterator(Isolate* isolate);
   // An iterator that iterates over a given thread's stack.
   V8_EXPORT_PRIVATE StackFrameIterator(Isolate* isolate, ThreadLocalTop* t);
+
+  StackFrameIterator(const StackFrameIterator&) = delete;
+  StackFrameIterator& operator=(const StackFrameIterator&) = delete;
 
   StackFrame* frame() const {
     DCHECK(!done());
@@ -1222,8 +1172,6 @@ class StackFrameIterator : public StackFrameIteratorBase {
  private:
   // Go back to the first frame.
   void Reset(ThreadLocalTop* top);
-
-  DISALLOW_COPY_AND_ASSIGN(StackFrameIterator);
 };
 
 // Iterator that supports iterating through all JavaScript frames.
@@ -1360,28 +1308,6 @@ class InterpretedFrameInfo {
                        bool pad_arguments, FrameInfoKind frame_info_kind);
 
   uint32_t register_stack_slot_count_;
-  uint32_t frame_size_in_bytes_without_fixed_;
-  uint32_t frame_size_in_bytes_;
-};
-
-class ArgumentsAdaptorFrameInfo {
- public:
-  static ArgumentsAdaptorFrameInfo Precise(int translation_height) {
-    return ArgumentsAdaptorFrameInfo{translation_height};
-  }
-
-  static ArgumentsAdaptorFrameInfo Conservative(int parameters_count) {
-    return ArgumentsAdaptorFrameInfo{parameters_count};
-  }
-
-  uint32_t frame_size_in_bytes_without_fixed() const {
-    return frame_size_in_bytes_without_fixed_;
-  }
-  uint32_t frame_size_in_bytes() const { return frame_size_in_bytes_; }
-
- private:
-  explicit ArgumentsAdaptorFrameInfo(int translation_height);
-
   uint32_t frame_size_in_bytes_without_fixed_;
   uint32_t frame_size_in_bytes_;
 };

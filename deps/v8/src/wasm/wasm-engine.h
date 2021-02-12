@@ -14,6 +14,7 @@
 #include "src/base/platform/condition-variable.h"
 #include "src/base/platform/mutex.h"
 #include "src/tasks/cancelable-task.h"
+#include "src/tasks/operations-barrier.h"
 #include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-tier.h"
 #include "src/zone/accounting-allocator.h"
@@ -330,13 +331,16 @@ class V8_EXPORT_PRIVATE WasmEngine {
   void FreeDeadCode(const DeadCodeMap&);
   void FreeDeadCodeLocked(const DeadCodeMap&);
 
+  // Get the script for a specific native module in a specific isolate. If it
+  // does not exist (or was garbage collected in the meantime), create a new
+  // script and make it public to debuggers.
   Handle<Script> GetOrCreateScript(Isolate*,
                                    const std::shared_ptr<NativeModule>&,
-                                   Vector<const char> source_url = {});
+                                   Vector<const char> source_url);
 
-  // Take shared ownership of a compile job handle, such that we can synchronize
-  // on that before the engine dies.
-  void ShepherdCompileJobHandle(std::shared_ptr<JobHandle>);
+  // Returns a barrier allowing background compile operations if valid and
+  // preventing this object from being destroyed.
+  std::shared_ptr<OperationsBarrier> GetBarrierForBackgroundCompile();
 
   // Call on process start and exit.
   static void InitializeOncePerProcess();
@@ -356,7 +360,7 @@ class V8_EXPORT_PRIVATE WasmEngine {
       Isolate* isolate, const WasmFeatures& enabled,
       std::unique_ptr<byte[]> bytes_copy, size_t length,
       Handle<Context> context, const char* api_method_name,
-      std::shared_ptr<CompilationResultResolver> resolver);
+      std::shared_ptr<CompilationResultResolver> resolver, int compilation_id);
 
   void TriggerGC(int8_t gc_sequence_index);
 
@@ -376,6 +380,8 @@ class V8_EXPORT_PRIVATE WasmEngine {
   // Implements a GDB-remote stub for WebAssembly debugging.
   std::unique_ptr<gdb_server::GdbServer> gdb_server_;
 #endif  // V8_ENABLE_WASM_GDB_REMOTE_DEBUGGING
+
+  std::atomic<int> next_compilation_id_{0};
 
   // This mutex protects all information which is mutated concurrently or
   // fields that are initialized lazily on the first access.
@@ -399,9 +405,8 @@ class V8_EXPORT_PRIVATE WasmEngine {
   std::unordered_map<NativeModule*, std::unique_ptr<NativeModuleInfo>>
       native_modules_;
 
-  // Background compile jobs that are still running. We need to join them before
-  // the engine gets deleted. Otherwise we don't care when exactly they finish.
-  std::vector<std::shared_ptr<JobHandle>> compile_job_handles_;
+  std::shared_ptr<OperationsBarrier> operations_barrier_{
+      std::make_shared<OperationsBarrier>()};
 
   // Size of code that became dead since the last GC. If this exceeds a certain
   // threshold, a new GC is triggered.

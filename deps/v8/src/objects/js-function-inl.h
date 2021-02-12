@@ -29,6 +29,8 @@ OBJECT_CONSTRUCTORS_IMPL(JSFunction, JSFunctionOrBoundFunction)
 CAST_ACCESSOR(JSFunction)
 
 ACCESSORS(JSFunction, raw_feedback_cell, FeedbackCell, kFeedbackCellOffset)
+RELEASE_ACQUIRE_ACCESSORS(JSFunction, raw_feedback_cell, FeedbackCell,
+                          kFeedbackCellOffset)
 
 FeedbackVector JSFunction::feedback_vector() const {
   DCHECK(has_feedback_vector());
@@ -111,9 +113,10 @@ void JSFunction::CompleteInobjectSlackTrackingIfActive() {
   }
 }
 
-AbstractCode JSFunction::abstract_code() {
+template <typename LocalIsolate>
+AbstractCode JSFunction::abstract_code(LocalIsolate* isolate) {
   if (ActiveTierIsIgnition()) {
-    return AbstractCode::cast(shared().GetBytecodeArray());
+    return AbstractCode::cast(shared().GetBytecodeArray(isolate));
   } else {
     return AbstractCode::cast(code());
   }

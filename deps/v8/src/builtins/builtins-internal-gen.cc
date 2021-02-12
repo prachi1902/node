@@ -486,6 +486,11 @@ TF_BUILTIN(DeleteProperty, DeletePropertyBaseAssembler) {
   Label if_index(this, &var_index), if_unique_name(this), if_notunique(this),
       if_notfound(this), slow(this), if_proxy(this);
 
+  if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+    // TODO(v8:11167) remove once OrderedNameDictionary supported.
+    GotoIf(Int32TrueConstant(), &slow);
+  }
+
   GotoIf(TaggedIsSmi(receiver), &slow);
   TNode<Map> receiver_map = LoadMap(CAST(receiver));
   TNode<Uint16T> instance_type = LoadMapInstanceType(receiver_map);
@@ -660,6 +665,7 @@ TF_BUILTIN(SetDataProperties, SetOrCopyDataPropertiesAssembler) {
   auto context = Parameter<Context>(Descriptor::kContext);
 
   Label if_runtime(this, Label::kDeferred);
+  GotoIfForceSlowPath(&if_runtime);
   Return(SetOrCopyDataProperties(context, target, source, &if_runtime, true));
 
   BIND(&if_runtime);
@@ -744,7 +750,6 @@ TF_BUILTIN(AdaptorWithBuiltinExitFrame, CodeStubAssembler) {
 
   TVARIABLE(Int32T, pushed_argc, actual_argc);
 
-#ifdef V8_NO_ARGUMENTS_ADAPTOR
   TNode<SharedFunctionInfo> shared = LoadJSFunctionSharedFunctionInfo(target);
 
   TNode<Int32T> formal_count =
@@ -764,7 +769,6 @@ TF_BUILTIN(AdaptorWithBuiltinExitFrame, CodeStubAssembler) {
   pushed_argc = formal_count;
   Goto(&done_argc);
   BIND(&done_argc);
-#endif
 
   // Update arguments count for CEntry to contain the number of arguments
   // including the receiver and the extra arguments.
@@ -915,6 +919,11 @@ TF_BUILTIN(GetProperty, CodeStubAssembler) {
   Label if_notfound(this), if_proxy(this, Label::kDeferred),
       if_slow(this, Label::kDeferred);
 
+  if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+    // TODO(v8:11167) remove once OrderedNameDictionary supported.
+    GotoIf(Int32TrueConstant(), &if_slow);
+  }
+
   CodeStubAssembler::LookupPropertyInHolder lookup_property_in_holder =
       [=](TNode<HeapObject> receiver, TNode<HeapObject> holder,
           TNode<Map> holder_map, TNode<Int32T> holder_instance_type,
@@ -969,6 +978,11 @@ TF_BUILTIN(GetPropertyWithReceiver, CodeStubAssembler) {
   auto on_non_existent = Parameter<Object>(Descriptor::kOnNonExistent);
   Label if_notfound(this), if_proxy(this, Label::kDeferred),
       if_slow(this, Label::kDeferred);
+
+  if (V8_DICT_MODE_PROTOTYPES_BOOL) {
+    // TODO(v8:11167) remove once OrderedNameDictionary supported.
+    GotoIf(Int32TrueConstant(), &if_slow);
+  }
 
   CodeStubAssembler::LookupPropertyInHolder lookup_property_in_holder =
       [=](TNode<HeapObject> receiver, TNode<HeapObject> holder,
@@ -1073,7 +1087,6 @@ TF_BUILTIN(InstantiateAsmJs, CodeStubAssembler) {
       Runtime::kInstantiateAsmJs, context, function, stdlib, foreign, heap);
   GotoIf(TaggedIsSmi(maybe_result_or_smi_zero), &tailcall_to_function);
 
-#ifdef V8_NO_ARGUMENTS_ADAPTOR
   TNode<SharedFunctionInfo> shared = LoadJSFunctionSharedFunctionInfo(function);
   TNode<Int32T> parameter_count =
       UncheckedCast<Int32T>(LoadSharedFunctionInfoFormalParameterCount(shared));
@@ -1081,13 +1094,12 @@ TF_BUILTIN(InstantiateAsmJs, CodeStubAssembler) {
   // pushed is the maximum of actual arguments count and formal parameters
   // count.
   Label argc_lt_param_count(this), argc_ge_param_count(this);
-  Branch(Int32LessThan(arg_count, parameter_count), &argc_lt_param_count,
-         &argc_ge_param_count);
+  Branch(IntPtrLessThan(args.GetLength(), ChangeInt32ToIntPtr(parameter_count)),
+         &argc_lt_param_count, &argc_ge_param_count);
   BIND(&argc_lt_param_count);
   PopAndReturn(Int32Add(parameter_count, Int32Constant(1)),
                maybe_result_or_smi_zero);
   BIND(&argc_ge_param_count);
-#endif
   args.PopAndReturn(maybe_result_or_smi_zero);
 
   BIND(&tailcall_to_function);

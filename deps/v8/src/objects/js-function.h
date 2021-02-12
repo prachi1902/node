@@ -63,8 +63,7 @@ class JSFunction : public JSFunctionOrBoundFunction {
 
   static const int kLengthDescriptorIndex = 0;
   static const int kNameDescriptorIndex = 1;
-  // Home object descriptor index when function has a [[HomeObject]] slot.
-  static const int kMaybeHomeObjectDescriptorIndex = 2;
+
   // Fast binding requires length and name accessors.
   static const int kMinDescriptorsForFastBind = 2;
 
@@ -89,7 +88,8 @@ class JSFunction : public JSFunctionOrBoundFunction {
 
   // Get the abstract code associated with the function, which will either be
   // a Code object or a BytecodeArray.
-  inline AbstractCode abstract_code();
+  template <typename LocalIsolate>
+  inline AbstractCode abstract_code(LocalIsolate* isolate);
 
   // The predicates for querying code kinds related to this function have
   // specific terminology:
@@ -113,6 +113,7 @@ class JSFunction : public JSFunctionOrBoundFunction {
 
   bool HasAvailableCodeKind(CodeKind kind) const;
 
+  CodeKind GetActiveTier() const;
   V8_EXPORT_PRIVATE bool ActiveTierIsIgnition() const;
   bool ActiveTierIsTurbofan() const;
   bool ActiveTierIsNCI() const;
@@ -164,6 +165,11 @@ class JSFunction : public JSFunctionOrBoundFunction {
   // the JSFunction's bytecode being flushed.
   DECL_ACCESSORS(raw_feedback_cell, FeedbackCell)
 
+  // [raw_feedback_cell] (synchronized version) When this is initialized from a
+  // newly allocated object (instead of a root sentinel), it should
+  // be written with release store semantics.
+  DECL_RELEASE_ACQUIRE_ACCESSORS(raw_feedback_cell, FeedbackCell)
+
   // Functions related to feedback vector. feedback_vector() can be used once
   // the function has feedback vectors allocated. feedback vectors may not be
   // available after compile when lazily allocating feedback vectors.
@@ -178,14 +184,16 @@ class JSFunction : public JSFunctionOrBoundFunction {
   // lazily.
   inline bool has_closure_feedback_cell_array() const;
   inline ClosureFeedbackCellArray closure_feedback_cell_array() const;
-  static void EnsureClosureFeedbackCellArray(Handle<JSFunction> function);
+  static void EnsureClosureFeedbackCellArray(
+      Handle<JSFunction> function, bool reset_budget_for_feedback_allocation);
 
   // Initializes the feedback cell of |function|. In lite mode, this would be
   // initialized to the closure feedback cell array that holds the feedback
   // cells for create closure calls from this function. In the regular mode,
   // this allocates feedback vector.
   static void InitializeFeedbackCell(Handle<JSFunction> function,
-                                     IsCompiledScope* compiled_scope);
+                                     IsCompiledScope* compiled_scope,
+                                     bool reset_budget_for_feedback_allocation);
 
   // Unconditionally clear the type feedback vector.
   void ClearTypeFeedbackInfo();
